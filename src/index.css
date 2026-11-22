@@ -1,0 +1,280 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: #F8FAFC;
+    color: #0F172A;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes jm-cup-shake {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+  20% { transform: translate3d(-3px, -2px, 0) rotate(-7deg); }
+  40% { transform: translate3d(3px, 1px, 0) rotate(7deg); }
+  60% { transform: translate3d(-3px, 2px, 0) rotate(-5deg); }
+  80% { transform: translate3d(2px, -1px, 0) rotate(5deg); }
+}
+
+@keyframes jm-dice-tumble {
+  0% {
+    opacity: 0.75;
+    transform: translate3d(0, -16px, 0) rotate(0deg) scale(0.92);
+  }
+  30% {
+    opacity: 1;
+    transform: translate3d(3px, -4px, 0) rotate(110deg) scale(1.06);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(-3px, 6px, 0) rotate(235deg) scale(0.98);
+  }
+  100% {
+    opacity: 0.85;
+    transform: translate3d(0, -16px, 0) rotate(360deg) scale(0.92);
+  }
+}
+
+@keyframes jm-dice-fall {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--jm-start-x, 0px), -92px, 0) scale(1.24) rotate(var(--jm-start-rot, -40deg));
+  }
+  18% {
+    opacity: 1;
+    transform: translate3d(calc(var(--jm-start-x, 0px) * 0.65), -58px, 0) scale(1.16) rotate(var(--jm-mid-rot, -18deg));
+  }
+  56% {
+    opacity: 1;
+    transform: translate3d(0, 2px, 0) scale(1.05, 0.93) rotate(calc(var(--jm-rest-rot, 6deg) * 0.5));
+  }
+  72% {
+    opacity: 1;
+    transform: translate3d(0, -14px, 0) scale(0.98, 1.03) rotate(calc(var(--jm-rest-rot, 6deg) * 1.15));
+  }
+  85% {
+    opacity: 1;
+    transform: translate3d(0, 1px, 0) scale(1.02, 0.97) rotate(var(--jm-rest-rot, 6deg));
+  }
+  93% {
+    opacity: 1;
+    transform: translate3d(0, -4px, 0) scale(1) rotate(var(--jm-rest-rot, 6deg));
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1) rotate(var(--jm-rest-rot, 6deg));
+  }
+}
+
+@keyframes jm-dice-shadow {
+  0% {
+    opacity: 0;
+    transform: scale(0.45);
+  }
+  56% {
+    opacity: 0.45;
+    transform: scale(1.08);
+  }
+  72% {
+    opacity: 0.25;
+    transform: scale(0.82);
+  }
+  85%, 100% {
+    opacity: 0.38;
+    transform: scale(1);
+  }
+}
+
+@keyframes jm-dice-exit {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1) rotate(var(--jm-rest-rot, 6deg));
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -14px, 0) scale(0.75) rotate(0deg);
+  }
+}
+
+.animate-jm-cup-shake {
+  animation: jm-cup-shake 0.42s ease-in-out infinite;
+  will-change: transform;
+}
+
+.animate-jm-dice-tumble {
+  animation: jm-dice-tumble 0.58s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  will-change: transform, opacity;
+}
+
+.animate-jm-dice-land {
+  animation: jm-dice-fall 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-jm-dice-shadow {
+  animation: jm-dice-shadow 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-jm-dice-exit {
+  animation: jm-dice-exit 0.3s cubic-bezier(0.4, 0, 1, 1) both;
+  will-change: transform, opacity;
+}
+
+@keyframes cr-hop {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  45% {
+    transform: translate3d(0, -14px, 0) scale(1.08, 0.94);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes cr-shake {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+  25% { transform: translate3d(-5px, -3px, 0) rotate(-6deg); }
+  50% { transform: translate3d(5px, 2px, 0) rotate(6deg); }
+  75% { transform: translate3d(-4px, 1px, 0) rotate(-4deg); }
+}
+
+.animate-cr-hop {
+  animation: cr-hop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+.animate-cr-shake {
+  animation: cr-shake 0.36s ease-in-out;
+  will-change: transform;
+}
+
+@keyframes cr-car-drive {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -110px, 0);
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 290px, 0);
+  }
+}
+
+@keyframes cr-car-hit {
+  0% {
+    opacity: 0.9;
+    transform: translate3d(0, -110px, 0) scale(1.04);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(0, 30px, 0) scale(1.08);
+  }
+  82% {
+    opacity: 1;
+    transform: translate3d(0, 22px, 0) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 26px, 0) scale(1.04);
+  }
+}
+
+@keyframes cr-laugh {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(-3deg) scale(1);
+  }
+  25% {
+    transform: translate3d(0, -6px, 0) rotate(5deg) scale(1.06, 0.95);
+  }
+  50% {
+    transform: translate3d(0, 0, 0) rotate(-4deg) scale(0.98, 1.04);
+  }
+  75% {
+    transform: translate3d(0, -5px, 0) rotate(4deg) scale(1.05, 0.96);
+  }
+}
+
+@keyframes cr-haha-pop {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(-4deg) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0) rotate(4deg) scale(1.08);
+  }
+}
+
+@keyframes cr-barrier-drop {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -14px, 0) scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-cr-car-drive {
+  animation: cr-car-drive var(--cr-speed, 2.8s) linear var(--cr-delay, 0s) infinite;
+  will-change: transform, opacity;
+}
+
+.animate-cr-car-hit {
+  animation: cr-car-hit 0.34s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.animate-cr-laugh {
+  animation: cr-laugh 0.38s ease-in-out infinite;
+  will-change: transform;
+}
+
+.animate-cr-haha-pop {
+  animation: cr-haha-pop 0.52s ease-in-out infinite;
+  will-change: transform;
+}
+
+.animate-cr-barrier-drop {
+  animation: cr-barrier-drop 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-jm-cup-shake,
+  .animate-jm-dice-tumble,
+  .animate-jm-dice-land,
+  .animate-jm-dice-shadow,
+  .animate-jm-dice-exit,
+  .animate-cr-hop,
+  .animate-cr-shake,
+  .animate-cr-car-drive,
+  .animate-cr-car-hit,
+  .animate-cr-laugh,
+  .animate-cr-haha-pop,
+  .animate-cr-barrier-drop {
+    animation: none;
+  }
+}

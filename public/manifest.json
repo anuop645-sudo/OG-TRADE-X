@@ -1,0 +1,20 @@
+{
+  "id": "./",
+  "name": "OG TRADE — Demo Trading & Games",
+  "short_name": "OG TRADE",
+  "description": "OG TRADE virtual demo colour trading, Jhandi Munda & Chicken Road simulator.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

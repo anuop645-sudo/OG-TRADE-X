@@ -1,0 +1,6 @@
+{
+  "name": "ChromaTrade Demo",
+  "description": "Interactive demo colour trading simulator with live round timers, virtual wallet, trend analytics, and order history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

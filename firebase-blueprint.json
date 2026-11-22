@@ -1,0 +1,333 @@
+{
+  "entities": {
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Trusted role document granting Admin Panel access when document ID equals Firebase UID and role equals 'admin'.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        }
+      },
+      "required": ["role"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user's profile, server-controlled coin balance, streak counters, and referral metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "publicUid": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[1-9][0-9]{5}$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "balance": {
+          "type": "number"
+        },
+        "referralCode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "referredBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "referredByCode": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "referralCount": {
+          "type": "number"
+        },
+        "referralBonusEarned": {
+          "type": "number"
+        },
+        "colourWinStreak": {
+          "type": "number"
+        },
+        "jhandiWinStreak": {
+          "type": "number"
+        },
+        "chickenWinStreak": {
+          "type": "number"
+        },
+        "lastResetAtMs": {
+          "type": "number"
+        },
+        "followBonusClaimed": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "photoURL",
+        "displayName",
+        "balance",
+        "referralCode",
+        "referredBy",
+        "referredByCode",
+        "referralCount",
+        "referralBonusEarned",
+        "colourWinStreak",
+        "jhandiWinStreak",
+        "lastResetAtMs",
+        "followBonusClaimed",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GameHistoryEntry": {
+      "title": "GameHistoryEntry",
+      "description": "Individual server-validated Colour Trade, Jhandi Munda, or Chicken Road round history for a user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "game": { "type": "string", "enum": ["colour", "jhandi", "chicken"] },
+        "periodId": { "type": "string", "maxLength": 64 },
+        "marketId": { "type": "string", "maxLength": 32 },
+        "selection": { "type": "string", "maxLength": 180 },
+        "stake": { "type": "number" },
+        "multiplier": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "fee": { "type": "number" },
+        "contractAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "won", "lost", "cancelled"] },
+        "outcomeNumber": { "type": "number" },
+        "outcomeLabel": { "type": "string", "maxLength": 180 },
+        "payout": { "type": "number" },
+        "netProfit": { "type": "number" },
+        "streakCutRate": { "type": "number" },
+        "createdAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "uid",
+        "game",
+        "periodId",
+        "marketId",
+        "selection",
+        "stake",
+        "multiplier",
+        "totalAmount",
+        "fee",
+        "contractAmount",
+        "status",
+        "outcomeNumber",
+        "outcomeLabel",
+        "payout",
+        "netProfit",
+        "streakCutRate",
+        "createdAtMs",
+        "createdAt"
+      ]
+    },
+    "WalletTransaction": {
+      "title": "WalletTransaction",
+      "description": "Server-written immutable wallet balance transaction record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "welcome_bonus",
+            "bet_debit",
+            "game_win",
+            "order_refund",
+            "reset_10k",
+            "instagram_bonus",
+            "referral_bonus",
+            "admin_credit",
+            "admin_debit"
+          ]
+        },
+        "game": { "type": "string", "enum": ["colour", "jhandi", "chicken", "wallet", "referral"] },
+        "amount": { "type": "number" },
+        "balanceBefore": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "description": { "type": "string", "maxLength": 200 },
+        "reason": { "type": "string", "maxLength": 200 },
+        "adminUid": { "type": "string", "maxLength": 128 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "createdAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "uid",
+        "type",
+        "game",
+        "amount",
+        "balanceBefore",
+        "balanceAfter",
+        "description",
+        "referenceId",
+        "createdAtMs",
+        "createdAt"
+      ]
+    },
+    "AdminTransaction": {
+      "title": "AdminTransaction",
+      "description": "Global server-written immutable audit log of admin coin additions and deductions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "targetPublicUid": { "type": "string", "maxLength": 6, "pattern": "^[1-9][0-9]{5}$" },
+        "targetEmail": { "type": "string", "maxLength": 254 },
+        "targetName": { "type": "string", "maxLength": 80 },
+        "type": { "type": "string", "enum": ["add", "deduct"] },
+        "amount": { "type": "number" },
+        "signedAmount": { "type": "number" },
+        "balanceBefore": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "adminUid": { "type": "string", "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 254 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "createdAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "targetUid",
+        "targetEmail",
+        "targetName",
+        "type",
+        "amount",
+        "signedAmount",
+        "balanceBefore",
+        "balanceAfter",
+        "reason",
+        "adminUid",
+        "timestamp",
+        "createdAtMs",
+        "createdAt"
+      ]
+    },
+    "ChickenSession": {
+      "title": "ChickenSession",
+      "description": "Server-only Chicken Road crossing session storing hidden trap positions.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "difficultyId": { "type": "string", "enum": ["easy", "medium", "hard", "hardcore"] },
+        "stake": { "type": "number" },
+        "netStake": { "type": "number" },
+        "currentLane": { "type": "number" },
+        "status": { "type": "string", "enum": ["running", "crashed", "cashed_out"] },
+        "updatedAtMs": { "type": "number" }
+      },
+      "required": ["uid", "difficultyId", "stake", "netStake", "currentLane", "status", "updatedAtMs"]
+    },
+    "ReferralDirectoryEntry": {
+      "title": "ReferralDirectoryEntry",
+      "description": "Server-only mapping from referral code to owner Firebase UID.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 16 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "ownerUid", "createdAt"]
+    },
+    "PublicUserId": {
+      "title": "PublicUserId",
+      "description": "Server-only uniqueness directory mapping 6-digit numeric public UIDs to Firebase Auth UIDs.",
+      "type": "object",
+      "properties": {
+        "publicUid": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[1-9][0-9]{5}$"
+        },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["publicUid", "uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Admin role assignment documents keyed by Firebase UID; role must be 'admin'."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile and server-controlled wallet state keyed by Firebase UID."
+    },
+    "/users/{userId}/gameHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/GameHistoryEntry" },
+      "description": "Per-user Colour Trade, Jhandi Munda, and Chicken Road history (server-written)."
+    },
+    "/users/{userId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/WalletTransaction" },
+      "description": "Per-user immutable wallet & admin transaction ledger (server-written)."
+    },
+    "/users/{userId}/chickenSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/ChickenSession" },
+      "description": "Server-only Chicken Road session state (never readable by clients)."
+    },
+    "/adminTransactions/{txId}": {
+      "schema": { "$ref": "#/entities/AdminTransaction" },
+      "description": "Immutable admin coin adjustment audit log (server-written)."
+    },
+    "/referrals/{code}": {
+      "schema": { "$ref": "#/entities/ReferralDirectoryEntry" },
+      "description": "Server-only referral code lookup table."
+    },
+    "/publicUserIds/{publicUid}": {
+      "schema": { "$ref": "#/entities/PublicUserId" },
+      "description": "Server-only uniqueness index for immutable 6-digit public user IDs."
+    }
+  }
+}

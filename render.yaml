@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: og-trade-api
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: node server.ts
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
