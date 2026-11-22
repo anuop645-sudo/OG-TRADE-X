@@ -53,6 +53,37 @@ function formatDateTime(ms?: number): string {
   });
 }
 
+function extractMobileDigits(
+  u: Pick<AdminUserSummary, 'email' | 'mobile' | 'phoneNumber'>
+): string {
+  if (u.mobile && /^\d{10}$/.test(u.mobile.trim())) {
+    return u.mobile.trim();
+  }
+  if (u.phoneNumber) {
+    const mPhone = /^\+91(\d{10})$/.exec(u.phoneNumber.trim());
+    if (mPhone) return mPhone[1];
+  }
+  if (u.email) {
+    const mAlias = /^m91(\d{10})@mobile\.ogtrade\.app$/i.exec(u.email.trim());
+    if (mAlias) return mAlias[1];
+  }
+  return '';
+}
+
+function formatUserContact(
+  u: Pick<AdminUserSummary, 'email' | 'mobile' | 'phoneNumber' | 'authMethod'>,
+  withMethodLabel = false
+): string {
+  const digits = extractMobileDigits(u);
+  if (digits) {
+    return withMethodLabel ? `+91 ${digits} · Mobile (+91)` : `+91 ${digits}`;
+  }
+  if (u.phoneNumber) {
+    return withMethodLabel ? `${u.phoneNumber} · Mobile (+91)` : u.phoneNumber;
+  }
+  return u.email || 'No email';
+}
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   adminUid,
   adminPublicUid,
@@ -201,6 +232,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       : u.publicUid,
                   displayName: String(data.displayName || u.displayName || 'Player'),
                   email: String(data.email || u.email || ''),
+                  mobile:
+                    typeof data.mobile === 'string' && data.mobile ? data.mobile : u.mobile,
+                  phoneNumber:
+                    typeof data.phoneNumber === 'string' && data.phoneNumber
+                      ? data.phoneNumber
+                      : u.phoneNumber,
+                  authMethod:
+                    data.authMethod === 'mobile' || data.authMethod === 'email'
+                      ? data.authMethod
+                      : u.authMethod,
                 }
               : u
           )
@@ -247,9 +288,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const filteredUsers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return users;
+    const compactQ = q.replace(/[\s-]/g, '');
     return users.filter(
       (u) =>
         (u.publicUid || '').toLowerCase().includes(q) ||
+        (u.mobile || '').toLowerCase().includes(compactQ) ||
+        (u.phoneNumber || '').toLowerCase().includes(compactQ) ||
         (u.email || '').toLowerCase().includes(q) ||
         (u.displayName || '').toLowerCase().includes(q) ||
         (u.uid || '').toLowerCase().includes(q)
@@ -338,7 +382,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setReasonInput('');
       const updatedBalance =
         typeof res?.balance === 'number' && Number.isFinite(res.balance) ? res.balance : selectedBalance;
-      const msg = `${operation === 'add' ? 'Added' : 'Deducted'} ${formatCurrency(parsedAmount)} DC ${operation === 'add' ? 'to' : 'from'} ${selectedUser.email || selectedUser.displayName}. New balance: ${formatCurrency(updatedBalance)} DC`;
+      const targetLabel = formatUserContact(selectedUser, false);
+      const msg = `${operation === 'add' ? 'Added' : 'Deducted'} ${formatCurrency(parsedAmount)} DC ${operation === 'add' ? 'to' : 'from'} ${targetLabel !== 'No email' ? targetLabel : selectedUser.displayName}. New balance: ${formatCurrency(updatedBalance)} DC`;
       setAdjustSuccess(msg);
       onToast?.(msg);
       void fetchAdminData(selectedUser.uid, true);
@@ -488,7 +533,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by 6-digit UID, email, display name, or Auth UID..."
+              placeholder="Search by 6-digit UID, mobile (+91), email, name, or Auth UID..."
               aria-label="Search registered users"
               className="h-10 w-full rounded-lg border border-slate-300 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
             />
@@ -568,7 +613,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         )}
                       </div>
                       <p className="text-xs font-medium text-slate-600 truncate">
-                        {u.email || 'No email'}
+                        {formatUserContact(u, true)}
                       </p>
                       <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono">
                         <span className="truncate max-w-[180px] sm:max-w-[230px]">Auth: {u.uid}</span>
@@ -636,7 +681,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-slate-600 truncate">{selectedUser.email}</div>
+                    <div className="text-xs text-slate-600 truncate">
+                      {formatUserContact(selectedUser, true)}
+                    </div>
                   </div>
                   <div className="text-right shrink-0">
                     <div className="text-[10px] font-semibold text-slate-400">Live Balance</div>

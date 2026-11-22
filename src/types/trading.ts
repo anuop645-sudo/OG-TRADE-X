@@ -58,6 +58,9 @@ export interface UserProfile {
   uid: string;
   publicUid?: string;
   email: string;
+  mobile?: string;
+  phoneNumber?: string;
+  authMethod?: 'email' | 'mobile';
   photoURL: string;
   displayName: string;
   balance: number;
@@ -123,6 +126,9 @@ export interface AdminUserSummary {
   uid: string;
   publicUid?: string;
   email: string;
+  mobile?: string;
+  phoneNumber?: string;
+  authMethod?: 'email' | 'mobile';
   displayName: string;
   balance: number;
   colourWinStreak: number;

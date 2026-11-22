@@ -45,6 +45,18 @@
           "format": "email",
           "maxLength": 254
         },
+        "mobile": {
+          "type": "string",
+          "maxLength": 15
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "authMethod": {
+          "type": "string",
+          "enum": ["email", "mobile"]
+        },
         "photoURL": {
           "type": "string",
           "maxLength": 512

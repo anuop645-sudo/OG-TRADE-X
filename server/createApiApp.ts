@@ -585,6 +585,23 @@ function makeTxId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function extractVerifiedMobileInfo(
+  authEmail: string,
+  authPhoneNumber?: string
+): { authMethod: 'email' | 'mobile'; mobile: string; phoneNumber: string } {
+  const emailMatch = /^m91(\d{10})@mobile\.ogtrade\.app$/i.exec(authEmail.trim());
+  if (emailMatch) {
+    const mobile = emailMatch[1];
+    return { authMethod: 'mobile', mobile, phoneNumber: `+91${mobile}` };
+  }
+  const phoneMatch = /^\+91(\d{10})$/.exec((authPhoneNumber || '').trim());
+  if (phoneMatch) {
+    const mobile = phoneMatch[1];
+    return { authMethod: 'mobile', mobile, phoneNumber: `+91${mobile}` };
+  }
+  return { authMethod: 'email', mobile: '', phoneNumber: '' };
+}
+
 function assertDbCredentialsConfigured(): void {
   if (credentialParseError) {
     throw new HttpError(500, credentialParseError);
@@ -652,6 +669,8 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
       let authEmail = typeof caller.email === 'string' ? caller.email.trim() : '';
       let authDisplayName = typeof caller.name === 'string' ? caller.name.trim() : '';
       let authPhotoUrl = typeof caller.picture === 'string' ? caller.picture.trim() : '';
+      let authPhoneNumber =
+        typeof caller.phone_number === 'string' ? caller.phone_number.trim() : '';
 
       // If token claims were issued before updateProfile finished, read fresh Firebase Auth user record
       if (credentialMode === 'service-account-env' && (!authEmail || (!authDisplayName && !bodyDisplayName))) {
@@ -660,12 +679,16 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           if (!authEmail && authUser.email) authEmail = authUser.email.trim();
           if (!authDisplayName && authUser.displayName) authDisplayName = authUser.displayName.trim();
           if (!authPhotoUrl && authUser.photoURL) authPhotoUrl = authUser.photoURL.trim();
+          if (!authPhoneNumber && authUser.phoneNumber) authPhoneNumber = authUser.phoneNumber.trim();
         } catch {
           // Continue with verified ID token claims
         }
       }
 
-      const desiredDisplayName = bodyDisplayName || authDisplayName;
+      const verifiedMobile = extractVerifiedMobileInfo(authEmail, authPhoneNumber);
+      const mobileDisplayFallback =
+        verifiedMobile.authMethod === 'mobile' ? `+91 ${verifiedMobile.mobile}` : '';
+      const desiredDisplayName = bodyDisplayName || authDisplayName || mobileDisplayFallback;
 
       const userRef = adminDb.collection('users').doc(caller.uid);
       const adminRef = adminDb.collection('admins').doc(caller.uid);
@@ -696,9 +719,36 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
               updates.email = syncedEmail.slice(0, 254);
             }
 
+            const existingMobile = typeof data.mobile === 'string' ? data.mobile.trim() : '';
+            const syncedMobile = existingMobile || verifiedMobile.mobile;
+            if (!existingMobile && syncedMobile) {
+              updates.mobile = syncedMobile;
+            }
+
+            const existingPhoneNumber =
+              typeof data.phoneNumber === 'string' ? data.phoneNumber.trim() : '';
+            const syncedPhoneNumber = existingPhoneNumber || verifiedMobile.phoneNumber;
+            if (!existingPhoneNumber && syncedPhoneNumber) {
+              updates.phoneNumber = syncedPhoneNumber;
+            }
+
+            const existingAuthMethod =
+              data.authMethod === 'mobile' || data.authMethod === 'email'
+                ? data.authMethod
+                : undefined;
+            const syncedAuthMethod: 'email' | 'mobile' =
+              existingAuthMethod || (syncedMobile ? 'mobile' : verifiedMobile.authMethod);
+            if (!existingAuthMethod) {
+              updates.authMethod = syncedAuthMethod;
+            }
+
             const existingName = typeof data.displayName === 'string' ? data.displayName.trim() : '';
             const emailPrefix = syncedEmail.includes('@') ? syncedEmail.split('@')[0] : '';
-            let syncedName = existingName || desiredDisplayName || emailPrefix || 'OG Player';
+            let syncedName =
+              existingName ||
+              desiredDisplayName ||
+              (syncedMobile ? `+91 ${syncedMobile}` : emailPrefix) ||
+              'OG Player';
             if (
               bodyDisplayName &&
               (!existingName || existingName === 'OG Player' || existingName === emailPrefix)
@@ -735,6 +785,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 uid: caller.uid,
                 publicUid,
                 email: syncedEmail.slice(0, 254),
+                mobile: syncedMobile || undefined,
+                phoneNumber: syncedPhoneNumber || undefined,
+                authMethod: syncedAuthMethod,
                 photoURL: syncedPhoto.slice(0, 512),
                 displayName: syncedName,
                 balance: typeof data.balance === 'number' ? data.balance : 0,
@@ -754,13 +807,21 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
 
           const { publicUid, publicUidRef } = await reserveUniquePublicUidInTx(tx, caller.uid);
           const rawEmail = (authEmail || `${caller.uid}@ogtrade.local`).slice(0, 254);
-          const fallbackName = rawEmail.includes('@') ? rawEmail.split('@')[0] : 'OG Player';
+          const fallbackName =
+            verifiedMobile.authMethod === 'mobile'
+              ? `+91 ${verifiedMobile.mobile}`
+              : rawEmail.includes('@')
+                ? rawEmail.split('@')[0]
+                : 'OG Player';
           const displayName = (desiredDisplayName || fallbackName).trim().slice(0, 40) || 'OG Player';
 
           const newProfile = {
             uid: caller.uid,
             publicUid,
             email: rawEmail,
+            ...(verifiedMobile.mobile ? { mobile: verifiedMobile.mobile } : {}),
+            ...(verifiedMobile.phoneNumber ? { phoneNumber: verifiedMobile.phoneNumber } : {}),
+            authMethod: verifiedMobile.authMethod,
             photoURL: authPhotoUrl.slice(0, 512),
             displayName,
             balance: INITIAL_BALANCE,
@@ -807,6 +868,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
               uid: newProfile.uid,
               publicUid: newProfile.publicUid,
               email: newProfile.email,
+              mobile: verifiedMobile.mobile || undefined,
+              phoneNumber: verifiedMobile.phoneNumber || undefined,
+              authMethod: verifiedMobile.authMethod,
               photoURL: newProfile.photoURL,
               displayName: newProfile.displayName,
               balance: newProfile.balance,
@@ -826,11 +890,20 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         adminRef.get(),
       ]);
 
-      // Best-effort sync of displayName back to Firebase Auth if Auth record lacked it
-      if (bodyDisplayName && !authDisplayName && credentialMode === 'service-account-env') {
-        void adminAuth.updateUser(caller.uid, { displayName: profile.displayName }).catch(() => {
-          // Non-fatal if Firebase Auth Admin write permission is not granted
-        });
+      // Best-effort sync of displayName / phoneNumber back to Firebase Auth if Auth record lacked it
+      if (credentialMode === 'service-account-env') {
+        const authUpdates: { displayName?: string; phoneNumber?: string } = {};
+        if (!authDisplayName && profile.displayName) {
+          authUpdates.displayName = profile.displayName;
+        }
+        if (verifiedMobile.phoneNumber && authPhoneNumber !== verifiedMobile.phoneNumber) {
+          authUpdates.phoneNumber = verifiedMobile.phoneNumber;
+        }
+        if (Object.keys(authUpdates).length > 0) {
+          void adminAuth.updateUser(caller.uid, authUpdates).catch(() => {
+            // Non-fatal if phone number already belongs to another Auth record or Auth write lacks IAM
+          });
+        }
       }
 
       const isAdmin = adminSnap.exists && adminSnap.data()?.role === 'admin';
@@ -1945,6 +2018,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           uid: string;
           publicUid: string;
           email: string;
+          mobile?: string;
+          phoneNumber?: string;
+          authMethod: 'email' | 'mobile';
           displayName: string;
           balance: number;
           colourWinStreak: number;
@@ -1968,11 +2044,27 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         if (!existingPublicUid) {
           missingPublicUids.push(docSnap.id);
         }
+        const docEmail = String(d.email || '');
+        const inferredMobile = extractVerifiedMobileInfo(docEmail, String(d.phoneNumber || ''));
+        const mobileVal =
+          typeof d.mobile === 'string' && d.mobile.trim()
+            ? d.mobile.trim()
+            : inferredMobile.mobile;
+        const phoneVal =
+          typeof d.phoneNumber === 'string' && d.phoneNumber.trim()
+            ? d.phoneNumber.trim()
+            : inferredMobile.phoneNumber;
+        const authMethodVal: 'email' | 'mobile' =
+          d.authMethod === 'mobile' || Boolean(mobileVal) ? 'mobile' : 'email';
+
         usersMap.set(docSnap.id, {
           uid: docSnap.id,
           publicUid: existingPublicUid,
-          email: String(d.email || ''),
-          displayName: String(d.displayName || 'Player'),
+          email: docEmail,
+          mobile: mobileVal || undefined,
+          phoneNumber: phoneVal || undefined,
+          authMethod: authMethodVal,
+          displayName: String(d.displayName || (mobileVal ? `+91 ${mobileVal}` : 'Player')),
           balance: typeof d.balance === 'number' ? d.balance : 0,
           colourWinStreak: typeof d.colourWinStreak === 'number' ? d.colourWinStreak : 0,
           jhandiWinStreak: typeof d.jhandiWinStreak === 'number' ? d.jhandiWinStreak : 0,
@@ -2007,17 +2099,31 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         do {
           const listRes = await adminAuth.listUsers(1000, nextPageToken);
           for (const authUser of listRes.users) {
+            const rawEmail = (authUser.email || `${authUser.uid}@ogtrade.local`).slice(0, 254);
+            const verifiedMobile = extractVerifiedMobileInfo(
+              authUser.email || '',
+              authUser.phoneNumber || ''
+            );
             const existing = usersMap.get(authUser.uid);
             if (existing) {
               if (!existing.email && authUser.email) existing.email = authUser.email;
+              if (!existing.mobile && verifiedMobile.mobile) {
+                existing.mobile = verifiedMobile.mobile;
+                existing.phoneNumber = verifiedMobile.phoneNumber;
+                existing.authMethod = 'mobile';
+              }
               if ((!existing.displayName || existing.displayName === 'Player') && authUser.displayName) {
                 existing.displayName = authUser.displayName;
               }
               continue;
             }
 
-            const rawEmail = (authUser.email || `${authUser.uid}@ogtrade.local`).slice(0, 254);
-            const fallbackName = rawEmail.includes('@') ? rawEmail.split('@')[0] : 'OG Player';
+            const fallbackName =
+              verifiedMobile.authMethod === 'mobile'
+                ? `+91 ${verifiedMobile.mobile}`
+                : rawEmail.includes('@')
+                  ? rawEmail.split('@')[0]
+                  : 'OG Player';
             const displayName =
               (authUser.displayName || fallbackName).trim().slice(0, 40) || 'OG Player';
             const createdMs = authUser.metadata?.creationTime
@@ -2032,10 +2138,23 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 if (snap.exists) {
                   const data = snap.data()!;
                   const existingUid = isValidPublicUid(data.publicUid) ? data.publicUid : '';
+                  const mobileVal =
+                    typeof data.mobile === 'string' && data.mobile.trim()
+                      ? data.mobile.trim()
+                      : verifiedMobile.mobile;
+                  const phoneVal =
+                    typeof data.phoneNumber === 'string' && data.phoneNumber.trim()
+                      ? data.phoneNumber.trim()
+                      : verifiedMobile.phoneNumber;
                   return {
                     uid: authUser.uid,
                     publicUid: existingUid,
                     email: String(data.email || rawEmail),
+                    mobile: mobileVal || undefined,
+                    phoneNumber: phoneVal || undefined,
+                    authMethod: (data.authMethod === 'mobile' || Boolean(mobileVal)
+                      ? 'mobile'
+                      : 'email') as 'email' | 'mobile',
                     displayName: String(data.displayName || displayName),
                     balance: typeof data.balance === 'number' ? data.balance : INITIAL_BALANCE,
                     colourWinStreak: typeof data.colourWinStreak === 'number' ? data.colourWinStreak : 0,
@@ -2064,6 +2183,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                   uid: authUser.uid,
                   publicUid,
                   email: rawEmail,
+                  ...(verifiedMobile.mobile ? { mobile: verifiedMobile.mobile } : {}),
+                  ...(verifiedMobile.phoneNumber ? { phoneNumber: verifiedMobile.phoneNumber } : {}),
+                  authMethod: verifiedMobile.authMethod,
                   photoURL: String(authUser.photoURL || '').slice(0, 512),
                   displayName,
                   balance: INITIAL_BALANCE,
@@ -2100,6 +2222,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                   uid: authUser.uid,
                   publicUid,
                   email: rawEmail,
+                  mobile: verifiedMobile.mobile || undefined,
+                  phoneNumber: verifiedMobile.phoneNumber || undefined,
+                  authMethod: verifiedMobile.authMethod,
                   displayName,
                   balance: INITIAL_BALANCE,
                   colourWinStreak: 0,
@@ -2122,6 +2247,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 uid: authUser.uid,
                 publicUid: '',
                 email: authUser.email || '',
+                mobile: verifiedMobile.mobile || undefined,
+                phoneNumber: verifiedMobile.phoneNumber || undefined,
+                authMethod: verifiedMobile.authMethod,
                 displayName,
                 balance: INITIAL_BALANCE,
                 colourWinStreak: 0,
@@ -2347,7 +2475,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         }
 
         const txId = makeTxId(operation === 'add' ? 'adm_add' : 'adm_sub');
-        const targetEmail = String(userData.email || '');
+        const targetEmail = String(userData.phoneNumber || userData.email || '');
         const targetName = String(userData.displayName || targetEmail || targetUid).slice(0, 80);
 
         if (pendingPublicUidRef && resolvedPublicUid) {

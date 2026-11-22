@@ -9,13 +9,10 @@ import { Eye, EyeOff, KeyRound, LogIn, Mail, Shield, Smartphone, User, UserCheck
 import { auth } from '../firebase';
 import type { UserProfile } from '../types/trading';
 import { ApiError, apiRequest } from '../utils/apiClient';
-import {
-  StoredAccountWallet,
-  loginOrRegisterMobileAccount,
-} from '../utils/mobileAuth';
+import type { StoredAccountWallet } from '../utils/mobileAuth';
 
 interface GuestLoginProps {
-  onMobileLogin: (
+  onMobileLogin?: (
     mobile: string,
     wallet: StoredAccountWallet,
     created: boolean,
@@ -49,6 +46,8 @@ function mapFirebaseAuthError(err: unknown): string {
       return 'Password must be at least 6 characters.';
     case 'auth/operation-not-allowed':
       return 'Email/Password sign-in is not enabled in Firebase Authentication settings.';
+    case 'auth/network-request-failed':
+      return 'Network error while contacting Firebase Authentication. Please check your connection.';
     case 'auth/too-many-requests':
       return 'Too many failed attempts. Please wait a moment and try again.';
     default:
@@ -56,8 +55,11 @@ function mapFirebaseAuthError(err: unknown): string {
   }
 }
 
+function buildMobileAuthEmail(cleanMobile: string): string {
+  return `m91${cleanMobile}@mobile.ogtrade.app`;
+}
+
 export const GuestLogin: React.FC<GuestLoginProps> = ({
-  onMobileLogin,
   onGuestLogin,
   onFirebaseAuthBusyChange,
   onFirebaseBootstrapComplete,
@@ -69,6 +71,8 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
   const [emailPassword, setEmailPassword] = useState('');
   const [showEmailPassword, setShowEmailPassword] = useState(false);
 
+  const [mobileMode, setMobileMode] = useState<'signin' | 'signup'>('signin');
+  const [mobilePlayerName, setMobilePlayerName] = useState('');
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -177,16 +181,115 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
   const handleMobileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    const cleanMobile = mobile.replace(/\D/g, '');
+    if (!/^\d{10}$/.test(cleanMobile)) {
+      setError('Enter a valid 10-digit mobile number.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+
+    const mobileAliasEmail = buildMobileAuthEmail(cleanMobile);
+    const cleanPlayerName = mobilePlayerName.trim().slice(0, 40);
+    const resolvedDisplayName =
+      mobileMode === 'signup' && cleanPlayerName ? cleanPlayerName : `+91 ${cleanMobile}`;
+
     setSubmitting(true);
+    onFirebaseAuthBusyChange?.(true);
+    let keepBusyForRetry = false;
     try {
-      await clearIncompleteFirebaseAuth();
-      const result = await loginOrRegisterMobileAccount(mobile, password);
-      if (!result.ok) {
-        setError(result.error);
-        return;
+      let targetUser = auth.currentUser;
+
+      if (mobileMode === 'signup') {
+        const sameMobileSignedIn =
+          Boolean(targetUser?.email) &&
+          targetUser!.email!.toLowerCase() === mobileAliasEmail.toLowerCase();
+
+        if (!sameMobileSignedIn) {
+          if (targetUser) {
+            await signOut(auth);
+          }
+
+          try {
+            const cred = await createUserWithEmailAndPassword(auth, mobileAliasEmail, password);
+            targetUser = cred.user;
+          } catch (createErr) {
+            const createCode = (createErr as { code?: string })?.code || '';
+            if (createCode === 'auth/email-already-in-use') {
+              throw new Error(
+                `An account for +91 ${cleanMobile} already exists. Switch to Existing User Sign In.`
+              );
+            }
+            throw createErr;
+          }
+        }
+
+        if (targetUser && resolvedDisplayName && targetUser.displayName !== resolvedDisplayName) {
+          await updateProfile(targetUser, { displayName: resolvedDisplayName });
+          await targetUser.reload();
+        }
+      } else {
+        if (targetUser) {
+          await signOut(auth);
+        }
+
+        try {
+          const signInCred = await signInWithEmailAndPassword(auth, mobileAliasEmail, password);
+          targetUser = signInCred.user;
+        } catch (signInErr) {
+          const signInCode = (signInErr as { code?: string })?.code || '';
+          if (
+            signInCode === 'auth/user-not-found' ||
+            signInCode === 'auth/wrong-password' ||
+            signInCode === 'auth/invalid-credential' ||
+            signInCode === 'auth/invalid-login-credentials'
+          ) {
+            throw new Error(
+              `Invalid mobile number or password for +91 ${cleanMobile}. New user? Switch to New Account Register.`
+            );
+          }
+          throw signInErr;
+        }
       }
-      onMobileLogin(mobile.replace(/\D/g, ''), result.wallet, result.created, result.bonusAdded);
+
+      if (!targetUser) {
+        throw new Error('Firebase mobile authentication session was not initialized.');
+      }
+
+      await targetUser.getIdToken(true);
+
+      const bootstrapRes = await apiRequest<{
+        ok?: boolean;
+        created?: boolean;
+        isAdmin?: boolean;
+        profile?: UserProfile;
+      }>('/api/user/bootstrap', {
+        method: 'POST',
+        body: mobileMode === 'signup' ? { displayName: resolvedDisplayName } : {},
+      });
+
+      if (!bootstrapRes?.profile || typeof bootstrapRes.profile !== 'object') {
+        throw new Error('Backend failed to initialize your mobile profile in Firestore.');
+      }
+
+      onFirebaseBootstrapComplete?.({
+        uid: targetUser.uid,
+        created: bootstrapRes.created,
+        isAdmin: bootstrapRes.isAdmin,
+        profile: bootstrapRes.profile,
+      });
+    } catch (err) {
+      if (auth.currentUser) {
+        keepBusyForRetry = true;
+      }
+      setError(mapFirebaseAuthError(err));
     } finally {
+      if (!keepBusyForRetry) {
+        onFirebaseAuthBusyChange?.(false);
+      }
       setSubmitting(false);
     }
   };
@@ -414,20 +517,80 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
             </>
           ) : (
             <>
-              <div className="mt-5 mb-5">
+              <div className="mt-5 mb-4">
                 <div className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
                   <Smartphone className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>Mobile &amp; Password Login</span>
+                  <span>Cloud Synced · Mobile (+91) &amp; Password</span>
                 </div>
                 <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-slate-900">
-                  Account Login
+                  {mobileMode === 'signin' ? 'Sign In with Mobile' : 'Create Mobile Account'}
                 </h1>
                 <p className="mt-1.5 text-sm text-slate-600">
-                  Enter your 10-digit mobile number and password (6+ characters). New numbers automatically start with 10K DC coins.
+                  {mobileMode === 'signin'
+                    ? 'Sign in with your 10-digit mobile number and password to sync your live DC wallet.'
+                    : 'Create a new account with your +91 mobile number and get 10K DC starting balance.'}
                 </p>
               </div>
 
+              <div className="mb-4 flex items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMode('signin');
+                    setError(null);
+                  }}
+                  className={`flex-1 rounded-lg border py-2 font-bold transition-colors ${
+                    mobileMode === 'signin'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  Existing User Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMode('signup');
+                    setError(null);
+                  }}
+                  className={`flex-1 rounded-lg border py-2 font-bold transition-colors ${
+                    mobileMode === 'signup'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  New Account Register
+                </button>
+              </div>
+
               <form onSubmit={handleMobileSubmit} className="space-y-4" noValidate>
+                {mobileMode === 'signup' && (
+                  <div>
+                    <label
+                      htmlFor="login-mobile-display-name"
+                      className="block text-xs font-semibold text-slate-700"
+                    >
+                      Player Name (Optional)
+                    </label>
+                    <div className="relative mt-1.5 flex items-center">
+                      <User
+                        className="pointer-events-none absolute left-3.5 h-4 w-4 text-slate-400"
+                        aria-hidden="true"
+                      />
+                      <input
+                        id="login-mobile-display-name"
+                        type="text"
+                        maxLength={40}
+                        value={mobilePlayerName}
+                        onChange={(e) => setMobilePlayerName(e.target.value)}
+                        disabled={submitting}
+                        placeholder="e.g. Rahul"
+                        className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-10 pr-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/15 disabled:bg-slate-50"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <label
                     htmlFor="login-mobile"
@@ -478,7 +641,7 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
                     <input
                       id="login-password"
                       type={showPassword ? 'text' : 'password'}
-                      autoComplete="current-password"
+                      autoComplete={mobileMode === 'signin' ? 'current-password' : 'new-password'}
                       maxLength={24}
                       value={password}
                       onChange={(e) => {
@@ -519,7 +682,15 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
                   className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white transition-colors hover:bg-slate-800 active:scale-[0.99] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
                 >
                   <LogIn className="h-4 w-4" aria-hidden="true" />
-                  <span>{submitting ? 'Signing in...' : 'Login with Mobile & Password'}</span>
+                  <span>
+                    {submitting
+                      ? mobileMode === 'signin'
+                        ? 'Signing in...'
+                        : 'Creating mobile account...'
+                      : mobileMode === 'signin'
+                        ? 'Sign In with Mobile & Password'
+                        : 'Create Account with Mobile (+91)'}
+                  </span>
                 </button>
               </form>
             </>

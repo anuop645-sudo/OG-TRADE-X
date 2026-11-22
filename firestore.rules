@@ -66,6 +66,9 @@ service cloud.firestore {
           'uid',
           'publicUid',
           'email',
+          'mobile',
+          'phoneNumber',
+          'authMethod',
           'photoURL',
           'displayName',
           'balance',
@@ -88,6 +91,9 @@ service cloud.firestore {
         && data.email is string
         && data.email.size() >= 5
         && data.email.size() <= 254
+        && (!('mobile' in data) || (data.mobile is string && data.mobile.size() <= 15))
+        && (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 20))
+        && (!('authMethod' in data) || (data.authMethod is string && data.authMethod in ['email', 'mobile']))
         && data.photoURL is string
         && data.photoURL.size() <= 512
         && data.displayName is string
@@ -129,6 +135,12 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && (!('publicUid' in existing()) || ('publicUid' in incoming() && incoming().publicUid == existing().publicUid))
         && (!('publicUid' in incoming()) || ('publicUid' in existing()))
+        && (!('mobile' in existing()) || ('mobile' in incoming() && incoming().mobile == existing().mobile))
+        && (!('mobile' in incoming()) || ('mobile' in existing()))
+        && (!('phoneNumber' in existing()) || ('phoneNumber' in incoming() && incoming().phoneNumber == existing().phoneNumber))
+        && (!('phoneNumber' in incoming()) || ('phoneNumber' in existing()))
+        && (!('authMethod' in existing()) || ('authMethod' in incoming() && incoming().authMethod == existing().authMethod))
+        && (!('authMethod' in incoming()) || ('authMethod' in existing()))
         && incoming().email == existing().email
         && incoming().photoURL == existing().photoURL
         && incoming().balance == existing().balance

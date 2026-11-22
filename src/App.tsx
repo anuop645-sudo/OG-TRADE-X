@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import {
+  EmailAuthProvider,
+  onAuthStateChanged,
+  reauthenticateWithCredential,
+  signOut,
+  updatePassword,
+} from 'firebase/auth';
 import type { User as FirebaseUser } from 'firebase/auth';
 import {
   collection,
@@ -173,6 +179,17 @@ function getInitialWalletState(session: ActiveAuthSession | null): {
   };
 }
 
+function extractMobileDisplayFromAuth(email?: string | null, phone?: string | null): string {
+  if (phone && /^\+91\d{10}$/.test(phone.trim())) {
+    return `+91 ${phone.trim().slice(3)}`;
+  }
+  if (email) {
+    const m = /^m91(\d{10})@mobile\.ogtrade\.app$/i.exec(email.trim());
+    if (m) return `+91 ${m[1]}`;
+  }
+  return '';
+}
+
 export default function App() {
   const [authSession, setAuthSession] = useState<ActiveAuthSession | null>(loadActiveSession);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -187,6 +204,8 @@ export default function App() {
   const [firebaseDisplayName, setFirebaseDisplayName] = useState<string>('');
   const [firebasePublicUid, setFirebasePublicUid] = useState<string>('');
   const [firebaseReferralCode, setFirebaseReferralCode] = useState<string>('');
+  const [firebaseAuthMethod, setFirebaseAuthMethod] = useState<'email' | 'mobile'>('email');
+  const [firebasePhoneNumber, setFirebasePhoneNumber] = useState<string>('');
   const [profileModalOpen, setProfileModalOpen] = useState<boolean>(false);
   const [copiedPublicUid, setCopiedPublicUid] = useState<boolean>(false);
 
@@ -280,8 +299,25 @@ export default function App() {
             : Date.now()
         );
         setFollowBonusClaimed(Boolean(payload.profile.followBonusClaimed));
+        const derivedPhone =
+          payload.profile.phoneNumber ||
+          (payload.profile.mobile ? `+91${payload.profile.mobile}` : '') ||
+          '';
+        const inferredMethod: 'email' | 'mobile' =
+          payload.profile.authMethod === 'mobile' ||
+          Boolean(derivedPhone) ||
+          Boolean(extractMobileDisplayFromAuth(payload.fallbackEmail, derivedPhone))
+            ? 'mobile'
+            : 'email';
+        setFirebaseAuthMethod(inferredMethod);
+        setFirebasePhoneNumber(derivedPhone);
         setFirebaseDisplayName(
-          String(payload.profile.displayName || payload.fallbackEmail || 'OG Player')
+          String(
+            payload.profile.displayName ||
+              extractMobileDisplayFromAuth(payload.fallbackEmail, derivedPhone) ||
+              payload.fallbackEmail ||
+              'OG Player'
+          )
         );
         setFirebasePublicUid(
           typeof payload.profile.publicUid === 'string' ? payload.profile.publicUid : ''
@@ -329,6 +365,8 @@ export default function App() {
         setFirebaseDisplayName('');
         setFirebasePublicUid('');
         setFirebaseReferralCode('');
+        setFirebaseAuthMethod('email');
+        setFirebasePhoneNumber('');
         setProfileModalOpen(false);
       }
     });
@@ -403,6 +441,18 @@ export default function App() {
         if (typeof d.publicUid === 'string' && d.publicUid) setFirebasePublicUid(d.publicUid);
         if (typeof d.referralCode === 'string' && d.referralCode) {
           setFirebaseReferralCode(d.referralCode);
+        }
+        const snapPhone =
+          typeof d.phoneNumber === 'string' && d.phoneNumber
+            ? d.phoneNumber
+            : typeof d.mobile === 'string' && d.mobile
+              ? `+91${d.mobile}`
+              : '';
+        if (snapPhone) {
+          setFirebasePhoneNumber(snapPhone);
+          setFirebaseAuthMethod('mobile');
+        } else if (d.authMethod === 'mobile' || d.authMethod === 'email') {
+          setFirebaseAuthMethod(d.authMethod);
         }
         if (typeof d.colourWinStreak === 'number') {
           colourWinStreakRef.current = d.colourWinStreak;
@@ -1116,6 +1166,8 @@ export default function App() {
     setProfileModalOpen(false);
     setFirebasePublicUid('');
     setFirebaseReferralCode('');
+    setFirebaseAuthMethod('email');
+    setFirebasePhoneNumber('');
     setActiveGame('colour');
     setOrders([]);
     setLastBanner(null);
@@ -1125,11 +1177,52 @@ export default function App() {
 
   const handleChangePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authSession || authSession.mode !== 'mobile') return;
+    if (currentPw.length < 6 || newPw.length < 6) {
+      setPwError('Both current and new passwords must be at least 6 characters.');
+      return;
+    }
+    if (currentPw === newPw) {
+      setPwError('New password must be different from current password.');
+      return;
+    }
     if (newPw !== confirmPw) {
       setPwError('New password and confirm password do not match.');
       return;
     }
+
+    if (isFirebaseSession && firebaseUser?.email) {
+      setPwError(null);
+      setPwSaving(true);
+      try {
+        const credential = EmailAuthProvider.credential(firebaseUser.email, currentPw);
+        await reauthenticateWithCredential(firebaseUser, credential);
+        await updatePassword(firebaseUser, newPw);
+        setChangePwOpen(false);
+        setCurrentPw('');
+        setNewPw('');
+        setConfirmPw('');
+        playOrderSound(soundEnabled);
+        setToastMessage('Password updated successfully.');
+      } catch (err) {
+        const code = (err as { code?: string })?.code || '';
+        if (
+          code === 'auth/wrong-password' ||
+          code === 'auth/invalid-credential' ||
+          code === 'auth/invalid-login-credentials'
+        ) {
+          setPwError('Current password is incorrect.');
+        } else if (code === 'auth/weak-password') {
+          setPwError('New password must be at least 6 characters.');
+        } else {
+          setPwError(err instanceof Error ? err.message : 'Unable to update password.');
+        }
+      } finally {
+        setPwSaving(false);
+      }
+      return;
+    }
+
+    if (!authSession || authSession.mode !== 'mobile') return;
     setPwError(null);
     setPwSaving(true);
     try {
@@ -1334,8 +1427,19 @@ export default function App() {
     []
   );
 
+  const firebaseMobileDisplay = extractMobileDisplayFromAuth(
+    firebaseUser?.email,
+    firebasePhoneNumber
+  );
+  const isFirebaseMobileAccount = Boolean(
+    isFirebaseSession && (firebaseAuthMethod === 'mobile' || firebaseMobileDisplay)
+  );
+  const canChangeMobilePassword = Boolean(
+    isFirebaseMobileAccount || (!isFirebaseSession && authSession?.mode === 'mobile')
+  );
+
   const playerLabel = firebaseUser
-    ? firebaseDisplayName || firebaseUser.email || 'Firebase User'
+    ? firebaseDisplayName || firebaseMobileDisplay || firebaseUser.email || 'Firebase User'
     : !authSession
       ? 'OG_PLAYER'
       : authSession.mode === 'mobile'
@@ -1409,7 +1513,7 @@ export default function App() {
             </div>
           )}
 
-          {changePwOpen && !isFirebaseSession && authSession?.mode === 'mobile' && (
+          {changePwOpen && canChangeMobilePassword && (
             <div
               role="dialog"
               aria-modal="true"
@@ -1563,9 +1667,13 @@ export default function App() {
                         </span>
                       )}
                     </div>
-                    {firebaseUser?.email && (
+                    {isFirebaseMobileAccount ? (
+                      <div className="mt-0.5 font-mono text-xs text-slate-600 truncate">
+                        {firebaseMobileDisplay || firebasePhoneNumber}
+                      </div>
+                    ) : firebaseUser?.email ? (
                       <div className="mt-0.5 text-xs text-slate-600 truncate">{firebaseUser.email}</div>
-                    )}
+                    ) : null}
                   </div>
 
                   {isFirebaseSession && (
@@ -1616,7 +1724,12 @@ export default function App() {
                         {firebaseReferralCode ? 'Referral Code' : 'Account Mode'}
                       </div>
                       <div className="mt-0.5 font-mono text-xs font-bold text-slate-800 truncate">
-                        {firebaseReferralCode || (isFirebaseSession ? 'Firebase' : authSession?.mode || 'Guest')}
+                        {firebaseReferralCode ||
+                          (isFirebaseSession
+                            ? isFirebaseMobileAccount
+                              ? 'Mobile (+91)'
+                              : 'Firebase'
+                            : authSession?.mode || 'Guest')}
                       </div>
                     </div>
                   </div>
@@ -1714,7 +1827,11 @@ export default function App() {
                 >
                   <User className="h-3.5 w-3.5 text-slate-500 shrink-0" aria-hidden="true" />
                   <span
-                    className={`truncate ${!isFirebaseSession && authSession?.mode === 'mobile' ? 'font-mono tabular-nums' : ''}`}
+                    className={`truncate ${
+                      isFirebaseMobileAccount || (!isFirebaseSession && authSession?.mode === 'mobile')
+                        ? 'font-mono tabular-nums'
+                        : ''
+                    }`}
                   >
                     {playerLabel}
                   </span>
@@ -1774,7 +1891,7 @@ export default function App() {
                   <span>{soundEnabled ? 'Sound On' : 'Muted'}</span>
                 </button>
 
-                {!isFirebaseSession && authSession?.mode === 'mobile' && (
+                {canChangeMobilePassword && (
                   <button
                     type="button"
                     onClick={() => {
