@@ -117,14 +117,40 @@ export async function apiRequest<T>(
     ? path
     : `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
   const method = options.method ?? 'POST';
+  const canRetryTransient = method === 'GET' || path === '/api/user/bootstrap';
+  const maxAttempts = canRetryTransient ? 3 : 1;
 
-  let response = await performAuthorizedFetch(targetUrl, method, token, options.body);
-  if (response.status === 401) {
-    const refreshed = await getFirebaseIdToken(true);
-    if (refreshed && refreshed !== token) {
-      token = refreshed;
+  let response!: Response;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
       response = await performAuthorizedFetch(targetUrl, method, token, options.body);
+    } catch (fetchErr) {
+      if (attempt < maxAttempts) {
+        await new Promise((r) => window.setTimeout(r, 1200 * attempt));
+        continue;
+      }
+      throw fetchErr;
     }
+
+    if (response.status === 401) {
+      const refreshed = await getFirebaseIdToken(true);
+      if (refreshed && refreshed !== token) {
+        token = refreshed;
+        response = await performAuthorizedFetch(targetUrl, method, token, options.body);
+      }
+      break;
+    }
+
+    if (
+      canRetryTransient &&
+      attempt < maxAttempts &&
+      (response.status === 502 || response.status === 503 || response.status === 504)
+    ) {
+      await new Promise((r) => window.setTimeout(r, 1200 * attempt));
+      continue;
+    }
+
+    break;
   }
 
   const contentType = (response.headers.get('content-type') || '').toLowerCase();

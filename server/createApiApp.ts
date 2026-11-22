@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response, Router } from 'express';
 import { cert, getApp, getApps, initializeApp } from 'firebase-admin/app';
-import type { Credential } from 'firebase-admin/app';
+import type { Credential, ServiceAccount } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import {
@@ -53,53 +53,139 @@ const firebaseConfig = loadFirebaseConfig();
 
 let credentialParseError: string | null = null;
 let credentialMode: 'service-account-env' | 'adc' = 'adc';
+let resolvedProjectId = firebaseConfig.projectId;
+
+function stripOuterQuotesAndBom(value: string): string {
+  let clean = value.replace(/^\uFEFF/, '').trim();
+  if (
+    (clean.startsWith("'") && clean.endsWith("'") && clean.length >= 2) ||
+    (clean.startsWith('"') && clean.endsWith('"') && clean.length >= 2)
+  ) {
+    const inner = clean.slice(1, -1).trim();
+    if (inner.startsWith('{') || /^[A-Za-z0-9+/=_-]+$/.test(inner)) {
+      clean = inner;
+    }
+  }
+  return clean;
+}
+
+function normalizePrivateKey(rawKey: string): string {
+  let key = stripOuterQuotesAndBom(rawKey);
+  key = key
+    .replace(/\\\\r\\\\n/g, '\n')
+    .replace(/\\\\n/g, '\n')
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim();
+  return key;
+}
+
+function parseServiceAccountJson(rawEnv: string): Record<string, unknown> {
+  const cleaned = stripOuterQuotesAndBom(rawEnv);
+  const candidates: string[] = [];
+
+  if (cleaned.startsWith('{')) {
+    candidates.push(cleaned);
+  } else {
+    try {
+      const decoded = stripOuterQuotesAndBom(Buffer.from(cleaned, 'base64').toString('utf-8'));
+      if (decoded.startsWith('{')) {
+        candidates.push(decoded);
+      }
+    } catch {
+      // Ignore base64 decode errors; raw candidate will report JSON error
+    }
+    candidates.push(cleaned);
+  }
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Record<string, unknown>;
+      }
+    } catch (err) {
+      lastError = err;
+      // Handle raw multiline JSON where newlines inside private_key were pasted unescaped
+      try {
+        const escapedNewlines = candidate.replace(/"((?:[^"\\]|\\.)*)"/g, (match) =>
+          match.replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+        );
+        const parsedFallback = JSON.parse(escapedNewlines) as unknown;
+        if (parsedFallback && typeof parsedFallback === 'object') {
+          return parsedFallback as Record<string, unknown>;
+        }
+      } catch {
+        // Keep lastError from primary parse
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Malformed JSON.');
+}
 
 function resolveAdminCredential(): Credential | undefined {
   const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
   if (rawJson) {
     try {
-      const jsonText = rawJson.startsWith('{')
-        ? rawJson
-        : Buffer.from(rawJson, 'base64').toString('utf-8');
-      const parsed = JSON.parse(jsonText) as {
-        project_id?: string;
-        projectId?: string;
-        client_email?: string;
-        clientEmail?: string;
-        private_key?: string;
-        privateKey?: string;
-      };
-      const clientEmail = parsed.client_email || parsed.clientEmail;
-      const rawKey = parsed.private_key || parsed.privateKey;
-      const projectId = parsed.project_id || parsed.projectId || firebaseConfig.projectId;
+      const parsed = parseServiceAccountJson(rawJson);
+      const clientEmail = String(parsed.client_email || parsed.clientEmail || '').trim();
+      const rawKey = String(parsed.private_key || parsed.privateKey || '');
+      const projectId = String(
+        parsed.project_id || parsed.projectId || firebaseConfig.projectId
+      ).trim();
+
       if (!clientEmail || !rawKey) {
         credentialParseError =
-          'FIREBASE_SERVICE_ACCOUNT_JSON is missing client_email or private_key.';
+          'FIREBASE_SERVICE_ACCOUNT_JSON is missing required client_email or private_key fields.';
         return undefined;
       }
+
+      const privateKey = normalizePrivateKey(rawKey);
+      if (!privateKey.includes('-----BEGIN') || !privateKey.includes('PRIVATE KEY-----')) {
+        credentialParseError =
+          'FIREBASE_SERVICE_ACCOUNT_JSON private_key is not a valid PEM private key.';
+        return undefined;
+      }
+
+      if (projectId) {
+        resolvedProjectId = projectId;
+      }
       credentialMode = 'service-account-env';
-      return cert({
-        projectId,
+      const serviceAccount: ServiceAccount = {
+        projectId: resolvedProjectId,
         clientEmail,
-        privateKey: rawKey.replace(/\\n/g, '\n'),
-      });
-    } catch (err) {
-      credentialParseError = `Invalid FIREBASE_SERVICE_ACCOUNT_JSON environment variable: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
+        privateKey,
+      };
+      return cert(serviceAccount);
+    } catch {
+      credentialParseError =
+        'FIREBASE_SERVICE_ACCOUNT_JSON could not be parsed as valid JSON or base64 service account JSON.';
       return undefined;
     }
   }
 
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-  const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
-  if (clientEmail && rawPrivateKey) {
+  const clientEmail = stripOuterQuotesAndBom(process.env.FIREBASE_CLIENT_EMAIL || '');
+  const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY || '';
+  if (clientEmail && rawPrivateKey.trim()) {
+    const privateKey = normalizePrivateKey(rawPrivateKey);
+    if (!privateKey.includes('-----BEGIN') || !privateKey.includes('PRIVATE KEY-----')) {
+      credentialParseError = 'FIREBASE_PRIVATE_KEY is not a valid PEM private key.';
+      return undefined;
+    }
+    const envProjectId = process.env.FIREBASE_PROJECT_ID?.trim();
+    if (envProjectId) {
+      resolvedProjectId = envProjectId;
+    }
     credentialMode = 'service-account-env';
-    return cert({
-      projectId: process.env.FIREBASE_PROJECT_ID?.trim() || firebaseConfig.projectId,
+    const serviceAccount: ServiceAccount = {
+      projectId: resolvedProjectId,
       clientEmail,
-      privateKey: rawPrivateKey.replace(/\\n/g, '\n'),
-    });
+      privateKey,
+    };
+    return cert(serviceAccount);
   }
 
   return undefined;
@@ -110,8 +196,8 @@ const adminApp = getApps().length
   ? getApp()
   : initializeApp(
       adminCredential
-        ? { projectId: firebaseConfig.projectId, credential: adminCredential }
-        : { projectId: firebaseConfig.projectId }
+        ? { projectId: resolvedProjectId, credential: adminCredential }
+        : { projectId: resolvedProjectId }
     );
 
 const adminAuth = getAdminAuth(adminApp);
@@ -459,7 +545,8 @@ export function handleRouteError(res: Response, err: unknown): void {
     res.status(500).json({
       code: 'MISSING_ADMIN_CREDENTIALS',
       error:
-        'Firebase Admin credentials are not configured on this serverless deployment. Add FIREBASE_SERVICE_ACCOUNT_JSON (or FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) in Netlify Environment Variables for project gamelog-21c7d and redeploy.',
+        credentialParseError ||
+        'Firebase Admin credentials are not configured on the backend server. Set FIREBASE_SERVICE_ACCOUNT_JSON in your backend environment (Render / Netlify) for project gamelog-21c7d and redeploy.',
     });
     return;
   }
@@ -467,11 +554,12 @@ export function handleRouteError(res: Response, err: unknown): void {
     res.status(500).json({
       code: 'PERMISSION_DENIED',
       error:
-        'Backend Firestore access denied (PERMISSION_DENIED). Please check Firestore IAM access for project gamelog-21c7d.',
+        'Backend Firestore access denied (PERMISSION_DENIED). Please check Firestore IAM permissions for project gamelog-21c7d.',
     });
     return;
   }
-  console.error('Server API error:', err);
+  const safeErrCode = typeof code === 'string' || typeof code === 'number' ? String(code) : 'INTERNAL';
+  console.error(`Server API error (${safeErrCode}):`, err instanceof Error ? err.message : String(err));
   res.status(500).json({ error: message || 'Internal server error.' });
 }
 
@@ -513,13 +601,11 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
       .map((s) => s.trim())
       .filter(Boolean);
 
-    if (origin) {
+    if (origin && (origin.startsWith('https://') || origin.startsWith('http://'))) {
       if (allowedEnv.length === 0 || allowedEnv.includes('*') || allowedEnv.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Vary', 'Origin');
       }
-    } else {
-      res.setHeader('Access-Control-Allow-Origin', '*');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
@@ -539,11 +625,15 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
 
   apiRouter.get('/health', (_req, res) => {
     res.json({
-      ok: true,
+      ok: credentialParseError === null,
       runtime,
       credentialMode,
+      hasServiceAccountEnv: Boolean(
+        process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() ||
+          (process.env.FIREBASE_CLIENT_EMAIL?.trim() && process.env.FIREBASE_PRIVATE_KEY?.trim())
+      ),
       credentialError: credentialParseError,
-      projectId: firebaseConfig.projectId,
+      projectId: resolvedProjectId,
       databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
     });
   });
@@ -553,6 +643,30 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
     try {
       const { decoded: caller } = await requireCaller(req);
       assertDbCredentialsConfigured();
+
+      const bodyDisplayName =
+        typeof (req.body as { displayName?: unknown } | undefined)?.displayName === 'string'
+          ? (req.body as { displayName: string }).displayName.trim().slice(0, 40)
+          : '';
+
+      let authEmail = typeof caller.email === 'string' ? caller.email.trim() : '';
+      let authDisplayName = typeof caller.name === 'string' ? caller.name.trim() : '';
+      let authPhotoUrl = typeof caller.picture === 'string' ? caller.picture.trim() : '';
+
+      // If token claims were issued before updateProfile finished, read fresh Firebase Auth user record
+      if (credentialMode === 'service-account-env' && (!authEmail || (!authDisplayName && !bodyDisplayName))) {
+        try {
+          const authUser = await adminAuth.getUser(caller.uid);
+          if (!authEmail && authUser.email) authEmail = authUser.email.trim();
+          if (!authDisplayName && authUser.displayName) authDisplayName = authUser.displayName.trim();
+          if (!authPhotoUrl && authUser.photoURL) authPhotoUrl = authUser.photoURL.trim();
+        } catch {
+          // Continue with verified ID token claims
+        }
+      }
+
+      const desiredDisplayName = bodyDisplayName || authDisplayName;
+
       const userRef = adminDb.collection('users').doc(caller.uid);
       const adminRef = adminDb.collection('admins').doc(caller.uid);
 
@@ -563,6 +677,8 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           if (snap.exists) {
             const data = snap.data()!;
             let publicUid = isValidPublicUid(data.publicUid) ? data.publicUid : '';
+            const updates: Record<string, unknown> = {};
+
             if (!publicUid) {
               const reserved = await reserveUniquePublicUidInTx(tx, caller.uid);
               publicUid = reserved.publicUid;
@@ -571,18 +687,58 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 uid: caller.uid,
                 createdAt: FieldValue.serverTimestamp(),
               });
-              tx.update(userRef, { publicUid });
+              updates.publicUid = publicUid;
             }
+
+            const existingEmail = typeof data.email === 'string' ? data.email.trim() : '';
+            const syncedEmail = existingEmail || authEmail || `${caller.uid}@ogtrade.local`;
+            if (!existingEmail && syncedEmail) {
+              updates.email = syncedEmail.slice(0, 254);
+            }
+
+            const existingName = typeof data.displayName === 'string' ? data.displayName.trim() : '';
+            const emailPrefix = syncedEmail.includes('@') ? syncedEmail.split('@')[0] : '';
+            let syncedName = existingName || desiredDisplayName || emailPrefix || 'OG Player';
+            if (
+              bodyDisplayName &&
+              (!existingName || existingName === 'OG Player' || existingName === emailPrefix)
+            ) {
+              syncedName = bodyDisplayName;
+            }
+            syncedName = syncedName.slice(0, 40) || 'OG Player';
+            if (syncedName !== existingName) {
+              updates.displayName = syncedName;
+            }
+
+            const syncedPhoto =
+              (typeof data.photoURL === 'string' && data.photoURL) || authPhotoUrl || '';
+            if (syncedPhoto && !data.photoURL) {
+              updates.photoURL = syncedPhoto.slice(0, 512);
+            }
+
+            const syncedReferralCode =
+              typeof data.referralCode === 'string' && data.referralCode.length >= 6
+                ? data.referralCode
+                : generateReferralCode(caller.uid);
+            if (!data.referralCode) {
+              updates.referralCode = syncedReferralCode;
+            }
+
+            if (Object.keys(updates).length > 0) {
+              updates.updatedAt = FieldValue.serverTimestamp();
+              tx.update(userRef, updates);
+            }
+
             return {
               created: false,
               profile: {
                 uid: caller.uid,
                 publicUid,
-                email: data.email || caller.email || '',
-                photoURL: data.photoURL || '',
-                displayName: data.displayName || caller.name || 'OG Player',
+                email: syncedEmail.slice(0, 254),
+                photoURL: syncedPhoto.slice(0, 512),
+                displayName: syncedName,
                 balance: typeof data.balance === 'number' ? data.balance : 0,
-                referralCode: data.referralCode || generateReferralCode(caller.uid),
+                referralCode: syncedReferralCode,
                 referredBy: data.referredBy || '',
                 referredByCode: data.referredByCode || '',
                 referralCount: data.referralCount || 0,
@@ -597,22 +753,15 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           }
 
           const { publicUid, publicUidRef } = await reserveUniquePublicUidInTx(tx, caller.uid);
-          const rawEmail = (caller.email || `${caller.uid}@ogtrade.local`).slice(0, 254);
+          const rawEmail = (authEmail || `${caller.uid}@ogtrade.local`).slice(0, 254);
           const fallbackName = rawEmail.includes('@') ? rawEmail.split('@')[0] : 'OG Player';
-          const displayName =
-            String(
-              (req.body as { displayName?: string } | undefined)?.displayName ||
-                caller.name ||
-                fallbackName
-            )
-              .trim()
-              .slice(0, 40) || 'OG Player';
+          const displayName = (desiredDisplayName || fallbackName).trim().slice(0, 40) || 'OG Player';
 
           const newProfile = {
             uid: caller.uid,
             publicUid,
             email: rawEmail,
-            photoURL: String(caller.picture || '').slice(0, 512),
+            photoURL: authPhotoUrl.slice(0, 512),
             displayName,
             balance: INITIAL_BALANCE,
             referralCode: generateReferralCode(caller.uid),
@@ -676,6 +825,13 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         }),
         adminRef.get(),
       ]);
+
+      // Best-effort sync of displayName back to Firebase Auth if Auth record lacked it
+      if (bodyDisplayName && !authDisplayName && credentialMode === 'service-account-env') {
+        void adminAuth.updateUser(caller.uid, { displayName: profile.displayName }).catch(() => {
+          // Non-fatal if Firebase Auth Admin write permission is not granted
+        });
+      }
 
       const isAdmin = adminSnap.exists && adminSnap.data()?.role === 'admin';
       res.json({ ok: true, created, isAdmin, profile });
@@ -1845,39 +2001,148 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         );
       }
 
-      // Optionally enrich with Firebase Auth users if IAM permits roles/firebaseauth.viewer
+      // List all Firebase Auth users (paginated) and backfill any missing Firestore users/{uid} docs
       try {
-        const listRes = await adminAuth.listUsers(1000);
-        for (const authUser of listRes.users) {
-          const existing = usersMap.get(authUser.uid);
-          if (existing) {
-            if (!existing.email && authUser.email) existing.email = authUser.email;
-            if (!existing.displayName && authUser.displayName) existing.displayName = authUser.displayName;
-          } else {
-            const rawEmail = authUser.email || '';
+        let nextPageToken: string | undefined;
+        do {
+          const listRes = await adminAuth.listUsers(1000, nextPageToken);
+          for (const authUser of listRes.users) {
+            const existing = usersMap.get(authUser.uid);
+            if (existing) {
+              if (!existing.email && authUser.email) existing.email = authUser.email;
+              if ((!existing.displayName || existing.displayName === 'Player') && authUser.displayName) {
+                existing.displayName = authUser.displayName;
+              }
+              continue;
+            }
+
+            const rawEmail = (authUser.email || `${authUser.uid}@ogtrade.local`).slice(0, 254);
+            const fallbackName = rawEmail.includes('@') ? rawEmail.split('@')[0] : 'OG Player';
+            const displayName =
+              (authUser.displayName || fallbackName).trim().slice(0, 40) || 'OG Player';
             const createdMs = authUser.metadata?.creationTime
               ? Date.parse(authUser.metadata.creationTime)
               : Date.now();
-            usersMap.set(authUser.uid, {
-              uid: authUser.uid,
-              publicUid: '',
-              email: rawEmail,
-              displayName:
-                authUser.displayName || (rawEmail ? rawEmail.split('@')[0] : 'Registered User'),
-              balance: INITIAL_BALANCE,
-              colourWinStreak: 0,
-              jhandiWinStreak: 0,
-              chickenWinStreak: 0,
-              followBonusClaimed: false,
-              lastResetAtMs: createdMs,
-              createdAtMs: createdMs,
-              updatedAtMs: createdMs,
-              isAdmin: adminUids.has(authUser.uid),
-            });
+            const safeCreatedMs = Number.isFinite(createdMs) ? createdMs : Date.now();
+
+            try {
+              const syncedDoc = await adminDb.runTransaction(async (tx) => {
+                const userRef = adminDb.collection('users').doc(authUser.uid);
+                const snap = await tx.get(userRef);
+                if (snap.exists) {
+                  const data = snap.data()!;
+                  const existingUid = isValidPublicUid(data.publicUid) ? data.publicUid : '';
+                  return {
+                    uid: authUser.uid,
+                    publicUid: existingUid,
+                    email: String(data.email || rawEmail),
+                    displayName: String(data.displayName || displayName),
+                    balance: typeof data.balance === 'number' ? data.balance : INITIAL_BALANCE,
+                    colourWinStreak: typeof data.colourWinStreak === 'number' ? data.colourWinStreak : 0,
+                    jhandiWinStreak: typeof data.jhandiWinStreak === 'number' ? data.jhandiWinStreak : 0,
+                    chickenWinStreak: typeof data.chickenWinStreak === 'number' ? data.chickenWinStreak : 0,
+                    followBonusClaimed: Boolean(data.followBonusClaimed),
+                    lastResetAtMs:
+                      typeof data.lastResetAtMs === 'number' ? data.lastResetAtMs : safeCreatedMs,
+                    createdAtMs: toMillisSafe(data.createdAt ?? data.createdAtMs) ?? safeCreatedMs,
+                    updatedAtMs: toMillisSafe(data.updatedAt ?? data.updatedAtMs) ?? safeCreatedMs,
+                    isAdmin: adminUids.has(authUser.uid),
+                  };
+                }
+
+                const { publicUid, publicUidRef } = await reserveUniquePublicUidInTx(
+                  tx,
+                  authUser.uid
+                );
+                const txId = makeTxId('welcome');
+                tx.set(publicUidRef, {
+                  publicUid,
+                  uid: authUser.uid,
+                  createdAt: FieldValue.serverTimestamp(),
+                });
+                tx.set(userRef, {
+                  uid: authUser.uid,
+                  publicUid,
+                  email: rawEmail,
+                  photoURL: String(authUser.photoURL || '').slice(0, 512),
+                  displayName,
+                  balance: INITIAL_BALANCE,
+                  referralCode: generateReferralCode(authUser.uid),
+                  referredBy: '',
+                  referredByCode: '',
+                  referralCount: 0,
+                  referralBonusEarned: 0,
+                  colourWinStreak: 0,
+                  jhandiWinStreak: 0,
+                  chickenWinStreak: 0,
+                  lastResetAtMs: safeCreatedMs,
+                  followBonusClaimed: false,
+                  createdAt: FieldValue.serverTimestamp(),
+                  updatedAt: FieldValue.serverTimestamp(),
+                });
+                tx.set(userRef.collection('transactions').doc(txId), {
+                  id: txId,
+                  uid: authUser.uid,
+                  type: 'welcome_bonus',
+                  game: 'wallet',
+                  amount: INITIAL_BALANCE,
+                  balanceBefore: 0,
+                  balanceAfter: INITIAL_BALANCE,
+                  description: 'Welcome bonus (10K DC)',
+                  reason: 'New account welcome bonus',
+                  referenceId: txId,
+                  timestamp: FieldValue.serverTimestamp(),
+                  createdAtMs: safeCreatedMs,
+                  createdAt: FieldValue.serverTimestamp(),
+                });
+
+                return {
+                  uid: authUser.uid,
+                  publicUid,
+                  email: rawEmail,
+                  displayName,
+                  balance: INITIAL_BALANCE,
+                  colourWinStreak: 0,
+                  jhandiWinStreak: 0,
+                  chickenWinStreak: 0,
+                  followBonusClaimed: false,
+                  lastResetAtMs: safeCreatedMs,
+                  createdAtMs: safeCreatedMs,
+                  updatedAtMs: safeCreatedMs,
+                  isAdmin: adminUids.has(authUser.uid),
+                };
+              });
+              usersMap.set(authUser.uid, syncedDoc);
+            } catch (syncErr) {
+              console.warn(
+                `Failed to sync Auth user ${authUser.uid} into Firestore users:`,
+                syncErr instanceof Error ? syncErr.message : String(syncErr)
+              );
+              usersMap.set(authUser.uid, {
+                uid: authUser.uid,
+                publicUid: '',
+                email: authUser.email || '',
+                displayName,
+                balance: INITIAL_BALANCE,
+                colourWinStreak: 0,
+                jhandiWinStreak: 0,
+                chickenWinStreak: 0,
+                followBonusClaimed: false,
+                lastResetAtMs: safeCreatedMs,
+                createdAtMs: safeCreatedMs,
+                updatedAtMs: safeCreatedMs,
+                isAdmin: adminUids.has(authUser.uid),
+              });
+            }
           }
-        }
-      } catch {
-        // Silent fallback if only Firestore IAM role is granted without Firebase Auth Viewer role
+          nextPageToken = listRes.pageToken;
+        } while (nextPageToken);
+      } catch (listErr) {
+        const listErrCode = (listErr as { code?: unknown })?.code || 'unknown';
+        console.warn(
+          `Admin listUsers sync skipped (${String(listErrCode)}):`,
+          listErr instanceof Error ? listErr.message : String(listErr)
+        );
       }
 
       const users = Array.from(usersMap.values()).sort(

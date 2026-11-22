@@ -177,6 +177,7 @@ export default function App() {
   const [authSession, setAuthSession] = useState<ActiveAuthSession | null>(loadActiveSession);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
+  const [firebaseAuthBusy, setFirebaseAuthBusy] = useState<boolean>(false);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [adminCheckComplete, setAdminCheckComplete] = useState<boolean>(false);
   const [profileLoaded, setProfileLoaded] = useState<boolean>(false);
@@ -252,9 +253,59 @@ export default function App() {
   runtimesRef.current = runtimes;
 
   const settledKeysRef = useRef<Set<string>>(new Set());
+  const bootstrappedUidRef = useRef<string | null>(null);
   const lastTickSecRef = useRef<number>(-1);
   const colourWinStreakRef = useRef<number>(0);
   const jhandiWinStreakRef = useRef<number>(0);
+
+  const applyBootstrappedProfile = useCallback(
+    (payload: {
+      uid: string;
+      created?: boolean;
+      isAdmin?: boolean;
+      profile?: UserProfile;
+      fallbackEmail?: string | null;
+    }) => {
+      bootstrappedUidRef.current = payload.uid;
+      if (payload.profile && typeof payload.profile === 'object') {
+        setDemoBalance(
+          typeof payload.profile.balance === 'number' && Number.isFinite(payload.profile.balance)
+            ? payload.profile.balance
+            : INITIAL_DEMO_BALANCE
+        );
+        setLastResetAtMs(
+          typeof payload.profile.lastResetAtMs === 'number' &&
+            Number.isFinite(payload.profile.lastResetAtMs)
+            ? payload.profile.lastResetAtMs
+            : Date.now()
+        );
+        setFollowBonusClaimed(Boolean(payload.profile.followBonusClaimed));
+        setFirebaseDisplayName(
+          String(payload.profile.displayName || payload.fallbackEmail || 'OG Player')
+        );
+        setFirebasePublicUid(
+          typeof payload.profile.publicUid === 'string' ? payload.profile.publicUid : ''
+        );
+        setFirebaseReferralCode(
+          typeof payload.profile.referralCode === 'string' ? payload.profile.referralCode : ''
+        );
+        colourWinStreakRef.current = payload.profile.colourWinStreak || 0;
+        jhandiWinStreakRef.current = payload.profile.jhandiWinStreak || 0;
+        setProfileLoaded(true);
+        setBackendAlert(null);
+        if (payload.created) {
+          setToastMessage(
+            `Welcome ${payload.profile.displayName || 'OG Player'}! 10K DC synced to your Firebase wallet.`
+          );
+        }
+      }
+      if (typeof payload.isAdmin === 'boolean') {
+        setIsAdmin(payload.isAdmin);
+        setAdminCheckComplete(true);
+      }
+    },
+    []
+  );
 
   // Firebase Auth listener
   useEffect(() => {
@@ -269,6 +320,7 @@ export default function App() {
       setFirebaseUser(user);
       setAuthReady(true);
       if (!user) {
+        bootstrappedUidRef.current = null;
         setIsAdmin(false);
         setAdminCheckComplete(false);
         setProfileLoaded(false);
@@ -288,70 +340,51 @@ export default function App() {
 
   // Bootstrap Firebase user profile + real-time Firestore listeners for wallet, admin role, and Colour Trade orders
   useEffect(() => {
-    if (!authReady || !firebaseUser) return;
+    if (!authReady || !firebaseUser || firebaseAuthBusy) return;
 
     let cancelled = false;
-    setIsAdmin(false);
-    setAdminCheckComplete(false);
-    setProfileLoaded(false);
-    setAdminViewOpen(false);
+    const alreadyBootstrapped =
+      bootstrappedUidRef.current === firebaseUser.uid && bootstrapRetryCount === 0;
+    if (!alreadyBootstrapped) {
+      setIsAdmin(false);
+      setAdminCheckComplete(false);
+      setProfileLoaded(false);
+      setAdminViewOpen(false);
+    }
     setBackendAlert(null);
 
-    void auth.authStateReady().then(() => {
-      if (cancelled || auth.currentUser?.uid !== firebaseUser.uid) return;
-      return apiRequest<{
-        ok?: boolean;
-        created?: boolean;
-        isAdmin?: boolean;
-        profile?: UserProfile;
-      }>('/api/user/bootstrap', {
-        method: 'POST',
-        body: { displayName: firebaseUser.displayName || '' },
-      })
-        .then((res) => {
-          if (cancelled) return;
-          if (res?.profile && typeof res.profile === 'object') {
-            setDemoBalance(
-              typeof res.profile.balance === 'number' && Number.isFinite(res.profile.balance)
-                ? res.profile.balance
-                : INITIAL_DEMO_BALANCE
-            );
-            setLastResetAtMs(
-              typeof res.profile.lastResetAtMs === 'number' && Number.isFinite(res.profile.lastResetAtMs)
-                ? res.profile.lastResetAtMs
-                : Date.now()
-            );
-            setFollowBonusClaimed(Boolean(res.profile.followBonusClaimed));
-            setFirebaseDisplayName(String(res.profile.displayName || firebaseUser.email || 'OG Player'));
-            setFirebasePublicUid(
-              typeof res.profile.publicUid === 'string' ? res.profile.publicUid : ''
-            );
-            setFirebaseReferralCode(
-              typeof res.profile.referralCode === 'string' ? res.profile.referralCode : ''
-            );
-            colourWinStreakRef.current = res.profile.colourWinStreak || 0;
-            jhandiWinStreakRef.current = res.profile.jhandiWinStreak || 0;
-            setProfileLoaded(true);
-            if (res.created) {
-              setToastMessage(
-                `Welcome ${res.profile.displayName || 'OG Player'}! 10K DC synced to your Firebase wallet.`
-              );
-            }
-          }
-          if (typeof res?.isAdmin === 'boolean') {
-            setIsAdmin(res.isAdmin);
-            setAdminCheckComplete(true);
-          }
+    if (!alreadyBootstrapped) {
+      void auth.authStateReady().then(() => {
+        if (cancelled || auth.currentUser?.uid !== firebaseUser.uid) return;
+        return apiRequest<{
+          ok?: boolean;
+          created?: boolean;
+          isAdmin?: boolean;
+          profile?: UserProfile;
+        }>('/api/user/bootstrap', {
+          method: 'POST',
+          body: { displayName: firebaseUser.displayName || '' },
         })
-        .catch((err) => {
-          if (cancelled) return;
-          const msg =
-            err instanceof ApiError || err instanceof Error
-              ? err.message
-              : 'Unable to reach backend wallet validator.';
-          setBackendAlert(msg);
-        });
-    });
+          .then((res) => {
+            if (cancelled) return;
+            applyBootstrappedProfile({
+              uid: firebaseUser.uid,
+              created: res?.created,
+              isAdmin: res?.isAdmin,
+              profile: res?.profile,
+              fallbackEmail: firebaseUser.email,
+            });
+          })
+          .catch((err) => {
+            if (cancelled) return;
+            const msg =
+              err instanceof ApiError || err instanceof Error
+                ? err.message
+                : 'Unable to reach backend wallet validator.';
+            setBackendAlert(msg);
+          });
+      });
+    }
 
     const userDocRef = doc(db, 'users', firebaseUser.uid);
     const unsubUser = onSnapshot(
@@ -469,7 +502,7 @@ export default function App() {
       unsubAdmin();
       unsubOrders();
     };
-  }, [authReady, firebaseUser, bootstrapRetryCount]);
+  }, [authReady, firebaseUser, firebaseAuthBusy, bootstrapRetryCount, applyBootstrappedProfile]);
 
   // Persist active local session and corresponding wallet (Mobile / Guest modes only)
   useEffect(() => {
@@ -1071,6 +1104,8 @@ export default function App() {
         // Ignore signOut error
       }
     }
+    bootstrappedUidRef.current = null;
+    setFirebaseAuthBusy(false);
     setAuthSession(null);
     setFirebaseUser(null);
     setIsAdmin(false);
@@ -1334,10 +1369,17 @@ export default function App() {
         aria-hidden="true"
         className="pointer-events-none fixed -left-[9999px] top-0 h-[200px] w-[200px] opacity-0"
       />
-      {!isAuthenticated ? (
+      {!isAuthenticated || firebaseAuthBusy ? (
         <GuestLogin
           onMobileLogin={handleMobileLogin}
           onGuestLogin={handleGuestLogin}
+          onFirebaseAuthBusyChange={setFirebaseAuthBusy}
+          onFirebaseBootstrapComplete={(payload) => {
+            applyBootstrappedProfile({
+              ...payload,
+              fallbackEmail: auth.currentUser?.email,
+            });
+          }}
         />
       ) : (
         <>

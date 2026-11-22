@@ -2,10 +2,13 @@ import React, { useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signOut,
   updateProfile,
 } from 'firebase/auth';
 import { Eye, EyeOff, KeyRound, LogIn, Mail, Shield, Smartphone, User, UserCheck } from 'lucide-react';
 import { auth } from '../firebase';
+import type { UserProfile } from '../types/trading';
+import { ApiError, apiRequest } from '../utils/apiClient';
 import {
   StoredAccountWallet,
   loginOrRegisterMobileAccount,
@@ -19,9 +22,19 @@ interface GuestLoginProps {
     bonusAdded: number
   ) => void;
   onGuestLogin: (guestName: string) => void;
+  onFirebaseAuthBusyChange?: (busy: boolean) => void;
+  onFirebaseBootstrapComplete?: (payload: {
+    uid: string;
+    created?: boolean;
+    isAdmin?: boolean;
+    profile?: UserProfile;
+  }) => void;
 }
 
 function mapFirebaseAuthError(err: unknown): string {
+  if (err instanceof ApiError) {
+    return err.message;
+  }
   const code = (err as { code?: string })?.code || '';
   switch (code) {
     case 'auth/invalid-email':
@@ -34,6 +47,8 @@ function mapFirebaseAuthError(err: unknown): string {
       return 'An account with this email already exists. Switch to Sign In.';
     case 'auth/weak-password':
       return 'Password must be at least 6 characters.';
+    case 'auth/operation-not-allowed':
+      return 'Email/Password sign-in is not enabled in Firebase Authentication settings.';
     case 'auth/too-many-requests':
       return 'Too many failed attempts. Please wait a moment and try again.';
     default:
@@ -44,6 +59,8 @@ function mapFirebaseAuthError(err: unknown): string {
 export const GuestLogin: React.FC<GuestLoginProps> = ({
   onMobileLogin,
   onGuestLogin,
+  onFirebaseAuthBusyChange,
+  onFirebaseBootstrapComplete,
 }) => {
   const [authTab, setAuthTab] = useState<'email' | 'mobile'>('email');
   const [emailMode, setEmailMode] = useState<'signin' | 'signup'>('signin');
@@ -59,6 +76,17 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const clearIncompleteFirebaseAuth = async () => {
+    if (auth.currentUser) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore signOut cleanup errors
+      }
+    }
+    onFirebaseAuthBusyChange?.(false);
+  };
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -73,20 +101,75 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
     }
 
     setSubmitting(true);
+    onFirebaseAuthBusyChange?.(true);
+    let keepBusyForRetry = false;
     try {
+      const cleanName = displayName.trim().slice(0, 40);
+      let targetUser = auth.currentUser;
+
       if (emailMode === 'signup') {
-        const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, emailPassword);
-        const cleanName = displayName.trim().slice(0, 40);
-        if (cleanName) {
-          await updateProfile(cred.user, { displayName: cleanName });
+        const sameEmailSignedIn =
+          Boolean(targetUser?.email) &&
+          targetUser!.email!.toLowerCase() === trimmedEmail.toLowerCase();
+
+        if (!sameEmailSignedIn) {
+          if (targetUser) {
+            await signOut(auth);
+          }
+          const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, emailPassword);
+          targetUser = cred.user;
+        }
+
+        if (targetUser && cleanName && targetUser.displayName !== cleanName) {
+          await updateProfile(targetUser, { displayName: cleanName });
+          await targetUser.reload();
         }
       } else {
-        await signInWithEmailAndPassword(auth, trimmedEmail, emailPassword);
+        if (targetUser) {
+          await signOut(auth);
+        }
+        const cred = await signInWithEmailAndPassword(auth, trimmedEmail, emailPassword);
+        targetUser = cred.user;
       }
-      // App.tsx listens to onAuthStateChanged and bootstraps user profile + admin role
+
+      if (!targetUser) {
+        throw new Error('Firebase authentication session was not initialized.');
+      }
+
+      // Refresh token so updated displayName / email claims are sent to backend
+      await targetUser.getIdToken(true);
+
+      // Synchronize Firebase Auth user into Firestore users collection before leaving login
+      const bootstrapRes = await apiRequest<{
+        ok?: boolean;
+        created?: boolean;
+        isAdmin?: boolean;
+        profile?: UserProfile;
+      }>('/api/user/bootstrap', {
+        method: 'POST',
+        body: emailMode === 'signup' ? { displayName: cleanName } : {},
+      });
+
+      if (!bootstrapRes?.profile || typeof bootstrapRes.profile !== 'object') {
+        throw new Error('Backend failed to initialize your user profile in Firestore.');
+      }
+
+      onFirebaseBootstrapComplete?.({
+        uid: targetUser.uid,
+        created: bootstrapRes.created,
+        isAdmin: bootstrapRes.isAdmin,
+        profile: bootstrapRes.profile,
+      });
     } catch (err) {
+      if (auth.currentUser) {
+        // Keep user on login screen to display the backend sync error and allow direct retry
+        keepBusyForRetry = true;
+      }
       setError(mapFirebaseAuthError(err));
     } finally {
+      if (!keepBusyForRetry) {
+        onFirebaseAuthBusyChange?.(false);
+      }
       setSubmitting(false);
     }
   };
@@ -96,6 +179,7 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
     setError(null);
     setSubmitting(true);
     try {
+      await clearIncompleteFirebaseAuth();
       const result = await loginOrRegisterMobileAccount(mobile, password);
       if (!result.ok) {
         setError(result.error);
@@ -449,7 +533,11 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
 
           <button
             type="button"
-            onClick={() => onGuestLogin('Guest Player')}
+            onClick={() => {
+              void clearIncompleteFirebaseAuth().then(() => {
+                onGuestLogin('Guest Player');
+              });
+            }}
             className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-xs font-bold text-slate-800 transition-colors hover:bg-slate-50"
           >
             <UserCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" />
