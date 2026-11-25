@@ -206,6 +206,7 @@ export default function App() {
   const [firebaseReferralCode, setFirebaseReferralCode] = useState<string>('');
   const [firebaseAuthMethod, setFirebaseAuthMethod] = useState<'email' | 'mobile'>('email');
   const [firebasePhoneNumber, setFirebasePhoneNumber] = useState<string>('');
+  const [suspendedNotice, setSuspendedNotice] = useState<string | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState<boolean>(false);
   const [copiedPublicUid, setCopiedPublicUid] = useState<boolean>(false);
 
@@ -329,6 +330,7 @@ export default function App() {
         jhandiWinStreakRef.current = payload.profile.jhandiWinStreak || 0;
         setProfileLoaded(true);
         setBackendAlert(null);
+        setSuspendedNotice(null);
         if (payload.created) {
           setToastMessage(
             `Welcome ${payload.profile.displayName || 'OG Player'}! 10K DC synced to your Firebase wallet.`
@@ -419,6 +421,15 @@ export default function App() {
               err instanceof ApiError || err instanceof Error
                 ? err.message
                 : 'Unable to reach backend wallet validator.';
+            if (
+              err instanceof ApiError &&
+              err.status === 403 &&
+              msg.toLowerCase().includes('suspended')
+            ) {
+              setSuspendedNotice(msg);
+              void signOut(auth);
+              return;
+            }
             setBackendAlert(msg);
           });
       });
@@ -430,6 +441,19 @@ export default function App() {
       (snap) => {
         if (!snap.exists()) return;
         const d = snap.data() ?? {};
+        if (d.suspended === true) {
+          const reason =
+            typeof d.suspendedReason === 'string' && d.suspendedReason.trim()
+              ? d.suspendedReason.trim()
+              : '';
+          setSuspendedNotice(
+            reason
+              ? `Your account has been suspended: ${reason}`
+              : 'Your account has been suspended by an administrator.'
+          );
+          void signOut(auth);
+          return;
+        }
         if (typeof d.balance === 'number' && Number.isFinite(d.balance)) setDemoBalance(d.balance);
         if (typeof d.lastResetAtMs === 'number' && Number.isFinite(d.lastResetAtMs)) {
           setLastResetAtMs(d.lastResetAtMs);
@@ -1168,6 +1192,7 @@ export default function App() {
     setFirebaseReferralCode('');
     setFirebaseAuthMethod('email');
     setFirebasePhoneNumber('');
+    setSuspendedNotice(null);
     setActiveGame('colour');
     setOrders([]);
     setLastBanner(null);
@@ -1478,6 +1503,7 @@ export default function App() {
           onMobileLogin={handleMobileLogin}
           onGuestLogin={handleGuestLogin}
           onFirebaseAuthBusyChange={setFirebaseAuthBusy}
+          initialError={suspendedNotice}
           onFirebaseBootstrapComplete={(payload) => {
             applyBootstrappedProfile({
               ...payload,
@@ -2043,12 +2069,13 @@ export default function App() {
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <span>10K Virtual DC Coins · No Real Money</span>
                 <a
-                  href="/og-trade-apk.zip"
-                  download="og-trade-apk.zip"
+                  href="https://drive.google.com/file/d/1DSd_mTb8GefkFWKvxaFTT-nB4538o24W/view?usp=drivesdk"
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap"
                 >
                   <Download className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
-                  <span>Download APK Zip</span>
+                  <span>Download APK</span>
                 </a>
               </div>
             </div>

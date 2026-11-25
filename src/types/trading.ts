@@ -73,6 +73,9 @@ export interface UserProfile {
   jhandiWinStreak: number;
   lastResetAtMs: number;
   followBonusClaimed: boolean;
+  suspended?: boolean;
+  suspendedReason?: string;
+  suspendedAtMs?: number;
 }
 
 export interface GameHistoryEntry {
@@ -139,6 +142,9 @@ export interface AdminUserSummary {
   createdAtMs?: number;
   updatedAtMs?: number;
   isAdmin?: boolean;
+  suspended?: boolean;
+  suspendedReason?: string;
+  suspendedAtMs?: number;
 }
 
 export interface AdminTransactionRecord {

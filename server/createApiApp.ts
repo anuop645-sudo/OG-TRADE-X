@@ -608,6 +608,21 @@ function assertDbCredentialsConfigured(): void {
   }
 }
 
+function assertUserNotSuspended(userData: Record<string, unknown> | undefined): void {
+  if (userData?.suspended === true) {
+    const reason =
+      typeof userData.suspendedReason === 'string' && userData.suspendedReason.trim()
+        ? userData.suspendedReason.trim()
+        : '';
+    throw new HttpError(
+      403,
+      reason
+        ? `Your account has been suspended: ${reason}`
+        : 'Your account has been suspended by an administrator.'
+    );
+  }
+}
+
 export function createApiRouter(runtime: 'express' | 'netlify-function' = 'express'): Router {
   const apiRouter = express.Router();
 
@@ -699,6 +714,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           const nowMs = Date.now();
           if (snap.exists) {
             const data = snap.data()!;
+            assertUserNotSuspended(data);
             let publicUid = isValidPublicUid(data.publicUid) ? data.publicUid : '';
             const updates: Record<string, unknown> = {};
 
@@ -929,6 +945,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const data = snap.data()!;
+        assertUserNotSuspended(data);
         const now = Date.now();
         const lastResetAtMs = typeof data.lastResetAtMs === 'number' ? data.lastResetAtMs : 0;
         const remainingMs = Math.max(0, lastResetAtMs + RESET_COOLDOWN_MS - now);
@@ -983,6 +1000,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const data = snap.data()!;
+        assertUserNotSuspended(data);
         if (data.followBonusClaimed) {
           throw new HttpError(400, '10K DC follow bonus already claimed for this account.');
         }
@@ -1070,6 +1088,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const userData = userSnap.data()!;
+        assertUserNotSuspended(userData);
         const balanceBefore = typeof userData.balance === 'number' ? userData.balance : 0;
 
         const pendingSnap = await tx.get(
@@ -1192,6 +1211,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         if (!userSnap.exists || !orderSnap.exists) {
           throw new HttpError(404, 'Pending order not found.');
         }
+        assertUserNotSuspended(userSnap.data());
         const order = orderSnap.data()!;
         if (order.game !== 'colour' || order.status !== 'pending') {
           throw new HttpError(400, 'Order cannot be cancelled.');
@@ -1268,6 +1288,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const userData = userSnap.data()!;
+        assertUserNotSuspended(userData);
         const currentStreak = typeof userData.colourWinStreak === 'number' ? userData.colourWinStreak : 0;
         const balanceBefore = typeof userData.balance === 'number' ? userData.balance : 0;
 
@@ -1523,6 +1544,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const data = snap.data()!;
+        assertUserNotSuspended(data);
         const balanceBefore = typeof data.balance === 'number' ? data.balance : 0;
         if (betSum > balanceBefore) {
           throw new HttpError(400, 'Insufficient demo balance. Clear bets or wait for 24h Claim 10K.');
@@ -1663,6 +1685,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           throw new HttpError(404, 'User profile not found.');
         }
         const data = snap.data()!;
+        assertUserNotSuspended(data);
         const balanceBefore = typeof data.balance === 'number' ? data.balance : 0;
         if (cleanStake > balanceBefore) {
           throw new HttpError(400, 'Insufficient balance. Lower bet or wait for 24h Claim 10K.');
@@ -1745,6 +1768,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
 
         const now = Date.now();
         const userData = userSnap.data()!;
+        assertUserNotSuspended(userData);
         const balanceBefore = typeof userData.balance === 'number' ? userData.balance : 0;
         const stakeVal = typeof sess.stake === 'number' ? sess.stake : 0;
         const netStakeVal = typeof sess.netStake === 'number' ? sess.netStake : 0;
@@ -1916,6 +1940,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
         const netStakeVal = typeof sess.netStake === 'number' ? sess.netStake : 0;
 
         const userData = userSnap.data()!;
+        assertUserNotSuspended(userData);
         const balanceBefore = typeof userData.balance === 'number' ? userData.balance : 0;
         const prevStreak = typeof userData.chickenWinStreak === 'number' ? userData.chickenWinStreak : 0;
         const nextStreak = prevStreak + 1;
@@ -2031,6 +2056,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           createdAtMs?: number;
           updatedAtMs?: number;
           isAdmin: boolean;
+          suspended?: boolean;
+          suspendedReason?: string;
+          suspendedAtMs?: number;
         }
       >();
 
@@ -2074,6 +2102,12 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
           createdAtMs: createdTs,
           updatedAtMs: updatedTs,
           isAdmin: adminUids.has(docSnap.id),
+          suspended: Boolean(d.suspended),
+          suspendedReason:
+            typeof d.suspendedReason === 'string' && d.suspendedReason.trim()
+              ? d.suspendedReason.trim()
+              : undefined,
+          suspendedAtMs: typeof d.suspendedAtMs === 'number' ? d.suspendedAtMs : undefined,
         });
       });
 
@@ -2111,6 +2145,9 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 existing.mobile = verifiedMobile.mobile;
                 existing.phoneNumber = verifiedMobile.phoneNumber;
                 existing.authMethod = 'mobile';
+              }
+              if (authUser.disabled) {
+                existing.suspended = true;
               }
               if ((!existing.displayName || existing.displayName === 'Player') && authUser.displayName) {
                 existing.displayName = authUser.displayName;
@@ -2166,6 +2203,13 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                     createdAtMs: toMillisSafe(data.createdAt ?? data.createdAtMs) ?? safeCreatedMs,
                     updatedAtMs: toMillisSafe(data.updatedAt ?? data.updatedAtMs) ?? safeCreatedMs,
                     isAdmin: adminUids.has(authUser.uid),
+                    suspended: Boolean(data.suspended || authUser.disabled),
+                    suspendedReason:
+                      typeof data.suspendedReason === 'string' && data.suspendedReason.trim()
+                        ? data.suspendedReason.trim()
+                        : undefined,
+                    suspendedAtMs:
+                      typeof data.suspendedAtMs === 'number' ? data.suspendedAtMs : undefined,
                   };
                 }
 
@@ -2199,6 +2243,13 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                   chickenWinStreak: 0,
                   lastResetAtMs: safeCreatedMs,
                   followBonusClaimed: false,
+                  ...(authUser.disabled
+                    ? {
+                        suspended: true,
+                        suspendedReason: 'Disabled in Firebase Authentication',
+                        suspendedAtMs: Date.now(),
+                      }
+                    : {}),
                   createdAt: FieldValue.serverTimestamp(),
                   updatedAt: FieldValue.serverTimestamp(),
                 });
@@ -2235,6 +2286,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                   createdAtMs: safeCreatedMs,
                   updatedAtMs: safeCreatedMs,
                   isAdmin: adminUids.has(authUser.uid),
+                  suspended: Boolean(authUser.disabled),
                 };
               });
               usersMap.set(authUser.uid, syncedDoc);
@@ -2260,6 +2312,7 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
                 createdAtMs: safeCreatedMs,
                 updatedAtMs: safeCreatedMs,
                 isAdmin: adminUids.has(authUser.uid),
+                suspended: Boolean(authUser.disabled),
               });
             }
           }
@@ -2566,6 +2619,193 @@ export function createApiRouter(runtime: 'express' | 'netlify-function' = 'expre
       });
 
       res.json({ ok: true, ...result });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // Admin: Change a user's Firebase Authentication password
+  apiRouter.post('/admin/user-password', async (req, res) => {
+    try {
+      const adminCaller = await requireAdmin(req);
+      assertDbCredentialsConfigured();
+      if (credentialMode !== 'service-account-env') {
+        throw new HttpError(
+          500,
+          'Firebase Admin service account credentials (FIREBASE_SERVICE_ACCOUNT_JSON) are required on the backend to update user passwords.'
+        );
+      }
+
+      const { targetUid, newPassword } = req.body as {
+        targetUid?: string;
+        newPassword?: string;
+      };
+
+      if (!isValidDocId(targetUid)) {
+        throw new HttpError(400, 'Invalid target user UID.');
+      }
+      if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+        throw new HttpError(400, 'New password must be between 6 and 128 characters.');
+      }
+
+      const targetAdminSnap = await adminDb.collection('admins').doc(targetUid).get();
+      if (
+        targetAdminSnap.exists &&
+        targetAdminSnap.data()?.role === 'admin' &&
+        targetUid !== adminCaller.uid
+      ) {
+        throw new HttpError(403, 'Cannot change another administrator account password.');
+      }
+
+      try {
+        await adminAuth.getUser(targetUid);
+      } catch {
+        throw new HttpError(404, 'Target user account was not found in Firebase Authentication.');
+      }
+
+      await adminAuth.updateUser(targetUid, { password: newPassword });
+
+      if (targetUid !== adminCaller.uid) {
+        await adminAuth.revokeRefreshTokens(targetUid).catch(() => {
+          // Non-fatal if token revocation fails
+        });
+      }
+
+      const userRef = adminDb.collection('users').doc(targetUid);
+      const userSnap = await userRef.get();
+      if (userSnap.exists) {
+        await userRef.update({
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      res.json({ ok: true, uid: targetUid });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  // Admin: Suspend or unsuspend a user account (Firebase Auth disabled + Firestore suspended flag)
+  apiRouter.post('/admin/user-status', async (req, res) => {
+    try {
+      const adminCaller = await requireAdmin(req);
+      assertDbCredentialsConfigured();
+      if (credentialMode !== 'service-account-env') {
+        throw new HttpError(
+          500,
+          'Firebase Admin service account credentials (FIREBASE_SERVICE_ACCOUNT_JSON) are required on the backend to suspend or unsuspend users.'
+        );
+      }
+
+      const { targetUid, suspended, reason } = req.body as {
+        targetUid?: string;
+        suspended?: boolean;
+        reason?: string;
+      };
+
+      if (!isValidDocId(targetUid)) {
+        throw new HttpError(400, 'Invalid target user UID.');
+      }
+      if (typeof suspended !== 'boolean') {
+        throw new HttpError(400, 'Suspended flag must be true or false.');
+      }
+      if (targetUid === adminCaller.uid) {
+        throw new HttpError(400, 'You cannot suspend your own administrator account.');
+      }
+
+      const targetAdminSnap = await adminDb.collection('admins').doc(targetUid).get();
+      if (suspended && targetAdminSnap.exists && targetAdminSnap.data()?.role === 'admin') {
+        throw new HttpError(403, 'Cannot suspend an administrator account.');
+      }
+
+      const rawReason = typeof reason === 'string' ? reason.trim().slice(0, 200) : '';
+      const cleanReason = suspended
+        ? rawReason || 'Suspended by administrator'
+        : '';
+
+      let authUserRecord;
+      try {
+        authUserRecord = await adminAuth.getUser(targetUid);
+      } catch {
+        throw new HttpError(404, 'Target user account was not found in Firebase Authentication.');
+      }
+
+      await adminAuth.updateUser(targetUid, { disabled: suspended });
+      if (suspended) {
+        await adminAuth.revokeRefreshTokens(targetUid).catch(() => {
+          // Non-fatal if token revocation fails
+        });
+      }
+
+      const now = Date.now();
+      const userRef = adminDb.collection('users').doc(targetUid);
+
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(userRef);
+        if (snap.exists) {
+          tx.update(userRef, {
+            suspended,
+            suspendedReason: suspended ? cleanReason : FieldValue.delete(),
+            suspendedAtMs: suspended ? now : FieldValue.delete(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return;
+        }
+
+        const rawEmail = (authUserRecord.email || `${targetUid}@ogtrade.local`).slice(0, 254);
+        const verifiedMobile = extractVerifiedMobileInfo(
+          authUserRecord.email || '',
+          authUserRecord.phoneNumber || ''
+        );
+        const fallbackName =
+          verifiedMobile.authMethod === 'mobile'
+            ? `+91 ${verifiedMobile.mobile}`
+            : rawEmail.includes('@')
+              ? rawEmail.split('@')[0]
+              : 'OG Player';
+        const displayName =
+          (authUserRecord.displayName || fallbackName).trim().slice(0, 40) || 'OG Player';
+        const { publicUid, publicUidRef } = await reserveUniquePublicUidInTx(tx, targetUid);
+
+        tx.set(publicUidRef, {
+          publicUid,
+          uid: targetUid,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        tx.set(userRef, {
+          uid: targetUid,
+          publicUid,
+          email: rawEmail,
+          ...(verifiedMobile.mobile ? { mobile: verifiedMobile.mobile } : {}),
+          ...(verifiedMobile.phoneNumber ? { phoneNumber: verifiedMobile.phoneNumber } : {}),
+          authMethod: verifiedMobile.authMethod,
+          photoURL: String(authUserRecord.photoURL || '').slice(0, 512),
+          displayName,
+          balance: INITIAL_BALANCE,
+          referralCode: generateReferralCode(targetUid),
+          referredBy: '',
+          referredByCode: '',
+          referralCount: 0,
+          referralBonusEarned: 0,
+          colourWinStreak: 0,
+          jhandiWinStreak: 0,
+          chickenWinStreak: 0,
+          lastResetAtMs: now,
+          followBonusClaimed: false,
+          suspended,
+          ...(suspended ? { suspendedReason: cleanReason, suspendedAtMs: now } : {}),
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      });
+
+      res.json({
+        ok: true,
+        uid: targetUid,
+        suspended,
+        suspendedReason: suspended ? cleanReason : undefined,
+        suspendedAtMs: suspended ? now : undefined,
+      });
     } catch (err) {
       handleRouteError(res, err);
     }

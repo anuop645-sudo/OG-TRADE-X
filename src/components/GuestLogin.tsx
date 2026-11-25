@@ -26,6 +26,7 @@ interface GuestLoginProps {
     isAdmin?: boolean;
     profile?: UserProfile;
   }) => void;
+  initialError?: string | null;
 }
 
 function mapFirebaseAuthError(err: unknown): string {
@@ -46,6 +47,8 @@ function mapFirebaseAuthError(err: unknown): string {
       return 'Password must be at least 6 characters.';
     case 'auth/operation-not-allowed':
       return 'Email/Password sign-in is not enabled in Firebase Authentication settings.';
+    case 'auth/user-disabled':
+      return 'Your account has been suspended by an administrator.';
     case 'auth/network-request-failed':
       return 'Network error while contacting Firebase Authentication. Please check your connection.';
     case 'auth/too-many-requests':
@@ -63,6 +66,7 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
   onGuestLogin,
   onFirebaseAuthBusyChange,
   onFirebaseBootstrapComplete,
+  initialError = null,
 }) => {
   const [authTab, setAuthTab] = useState<'email' | 'mobile'>('email');
   const [emailMode, setEmailMode] = useState<'signin' | 'signup'>('signin');
@@ -78,7 +82,13 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
   const [showPassword, setShowPassword] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
+
+  React.useEffect(() => {
+    if (initialError) {
+      setError(initialError);
+    }
+  }, [initialError]);
 
   const clearIncompleteFirebaseAuth = async () => {
     if (auth.currentUser) {
@@ -165,7 +175,14 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
         profile: bootstrapRes.profile,
       });
     } catch (err) {
-      if (auth.currentUser) {
+      const isSuspendedErr =
+        err instanceof ApiError &&
+        err.status === 403 &&
+        err.message.toLowerCase().includes('suspended');
+      if (isSuspendedErr) {
+        await clearIncompleteFirebaseAuth();
+        keepBusyForRetry = false;
+      } else if (auth.currentUser) {
         // Keep user on login screen to display the backend sync error and allow direct retry
         keepBusyForRetry = true;
       }
@@ -282,7 +299,14 @@ export const GuestLogin: React.FC<GuestLoginProps> = ({
         profile: bootstrapRes.profile,
       });
     } catch (err) {
-      if (auth.currentUser) {
+      const isSuspendedErr =
+        err instanceof ApiError &&
+        err.status === 403 &&
+        err.message.toLowerCase().includes('suspended');
+      if (isSuspendedErr) {
+        await clearIncompleteFirebaseAuth();
+        keepBusyForRetry = false;
+      } else if (auth.currentUser) {
         keepBusyForRetry = true;
       }
       setError(mapFirebaseAuthError(err));

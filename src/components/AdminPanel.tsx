@@ -2,14 +2,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { doc, onSnapshot } from 'firebase/firestore';
 import {
   ArrowLeft,
+  Ban,
   CheckCircle2,
   Coins,
   Copy,
+  Eye,
+  EyeOff,
   History,
+  KeyRound,
   MinusCircle,
   PlusCircle,
   RefreshCw,
   Search,
+  ShieldAlert,
   ShieldCheck,
   UserCheck,
   Users,
@@ -113,6 +118,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [adjustSuccess, setAdjustSuccess] = useState<string | null>(null);
   const [historyView, setHistoryView] = useState<'admin' | 'user'>('admin');
   const [copiedUid, setCopiedUid] = useState<string | null>(null);
+
+  const [newPasswordInput, setNewPasswordInput] = useState<string>('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState<string>('');
+  const [showNewPassword, setShowNewPassword] = useState<boolean>(false);
+  const [passwordSubmitting, setPasswordSubmitting] = useState<boolean>(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+
+  const [suspendReasonInput, setSuspendReasonInput] = useState<string>('');
+  const [statusSubmitting, setStatusSubmitting] = useState<boolean>(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusSuccess, setStatusSuccess] = useState<string | null>(null);
 
   const fetchAdminData = useCallback(
     async (targetUidForTx?: string, silent = false) => {
@@ -242,6 +259,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     data.authMethod === 'mobile' || data.authMethod === 'email'
                       ? data.authMethod
                       : u.authMethod,
+                  suspended: typeof data.suspended === 'boolean' ? data.suspended : u.suspended,
+                  suspendedReason:
+                    typeof data.suspendedReason === 'string' && data.suspendedReason.trim()
+                      ? data.suspendedReason.trim()
+                      : data.suspended === false
+                        ? undefined
+                        : u.suspendedReason,
+                  suspendedAtMs:
+                    typeof data.suspendedAtMs === 'number'
+                      ? data.suspendedAtMs
+                      : data.suspended === false
+                        ? undefined
+                        : u.suspendedAtMs,
                 }
               : u
           )
@@ -304,6 +334,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     () => users.find((u) => u.uid === selectedUid) || null,
     [users, selectedUid]
   );
+
+  useEffect(() => {
+    setNewPasswordInput('');
+    setConfirmPasswordInput('');
+    setPasswordError(null);
+    setPasswordSuccess(null);
+    setSuspendReasonInput('');
+    setStatusError(null);
+    setStatusSuccess(null);
+  }, [selectedUid]);
 
   const totalCoinsAcrossUsers = useMemo(
     () => users.reduce((sum, u) => sum + (Number.isFinite(u?.balance) ? u.balance : 0), 0),
@@ -395,6 +435,117 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAdjustError(msg);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleAdminPasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordError(null);
+    setPasswordSuccess(null);
+
+    if (!selectedUser) {
+      setPasswordError('Select a registered user first.');
+      return;
+    }
+    if (selectedUser.isAdmin && selectedUser.uid !== adminUid) {
+      setPasswordError('Cannot change another administrator account password.');
+      return;
+    }
+    if (newPasswordInput.length < 6 || newPasswordInput.length > 128) {
+      setPasswordError('New password must be between 6 and 128 characters.');
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      setPasswordError('New password and confirm password do not match.');
+      return;
+    }
+
+    setPasswordSubmitting(true);
+    try {
+      await apiRequest<{ ok: boolean; uid: string }>('/api/admin/user-password', {
+        method: 'POST',
+        body: {
+          targetUid: selectedUser.uid,
+          newPassword: newPasswordInput,
+        },
+      });
+      const label = formatUserContact(selectedUser, false);
+      const msg = `Password updated for ${label !== 'No email' ? label : selectedUser.displayName}.`;
+      setNewPasswordInput('');
+      setConfirmPasswordInput('');
+      setPasswordSuccess(msg);
+      onToast?.(msg);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Failed to update user password.';
+      setPasswordError(msg);
+    } finally {
+      setPasswordSubmitting(false);
+    }
+  };
+
+  const handleToggleSuspendUser = async (nextSuspended: boolean) => {
+    setStatusError(null);
+    setStatusSuccess(null);
+
+    if (!selectedUser) {
+      setStatusError('Select a registered user first.');
+      return;
+    }
+    if (selectedUser.uid === adminUid || selectedUser.isAdmin) {
+      setStatusError('Administrator accounts cannot be suspended.');
+      return;
+    }
+
+    setStatusSubmitting(true);
+    try {
+      const res = await apiRequest<{
+        ok: boolean;
+        uid: string;
+        suspended: boolean;
+        suspendedReason?: string;
+        suspendedAtMs?: number;
+      }>('/api/admin/user-status', {
+        method: 'POST',
+        body: {
+          targetUid: selectedUser.uid,
+          suspended: nextSuspended,
+          reason: nextSuspended ? suspendReasonInput.trim() : '',
+        },
+      });
+
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.uid === selectedUser.uid
+            ? {
+                ...u,
+                suspended: res.suspended,
+                suspendedReason: res.suspended ? res.suspendedReason : undefined,
+                suspendedAtMs: res.suspended ? res.suspendedAtMs : undefined,
+                updatedAtMs: Date.now(),
+              }
+            : u
+        )
+      );
+      setSuspendReasonInput('');
+      const label = formatUserContact(selectedUser, false);
+      const targetName = label !== 'No email' ? label : selectedUser.displayName;
+      const msg = res.suspended
+        ? `User ${targetName} has been suspended.`
+        : `User ${targetName} has been reactivated.`;
+      setStatusSuccess(msg);
+      onToast?.(msg);
+      void fetchAdminData(selectedUser.uid, true);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Failed to update user account status.';
+      setStatusError(msg);
+    } finally {
+      setStatusSubmitting(false);
     }
   };
 
@@ -570,7 +721,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     className={`flex flex-col gap-2 rounded-xl border p-3 transition-colors cursor-pointer sm:flex-row sm:items-center sm:justify-between ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-50/70 ring-1 ring-indigo-500'
-                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                        : u.suspended
+                          ? 'border-rose-200 bg-rose-50/40 hover:border-rose-300 hover:bg-rose-50/70'
+                          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                     }`}
                   >
                     <div className="min-w-0 space-y-0.5">
@@ -603,6 +756,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <span className="inline-flex items-center gap-1 rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
                             <ShieldCheck className="h-3 w-3" aria-hidden="true" />
                             ADMIN
+                          </span>
+                        )}
+                        {u.suspended && (
+                          <span className="inline-flex items-center gap-1 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            <Ban className="h-3 w-3" aria-hidden="true" />
+                            SUSPENDED
                           </span>
                         )}
                         {isSelected && (
@@ -652,35 +811,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         </div>
 
-        {/* Right: Atomic Coin Add / Deduct Control */}
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs lg:col-span-5">
-          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-            <Coins className="h-4 w-4 text-amber-500" aria-hidden="true" />
-            <h2 className="font-display text-base font-bold text-slate-900">
-              Adjust User Wallet
-            </h2>
-          </div>
+        {/* Right: Atomic Coin Add / Deduct + User Security Controls */}
+        <div className="space-y-4 lg:col-span-5">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+              <Coins className="h-4 w-4 text-amber-500" aria-hidden="true" />
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Adjust User Wallet
+              </h2>
+            </div>
 
-          {!selectedUser ? (
-            <p className="py-10 text-center text-xs text-slate-500">
-              Select a user from the list to add or deduct coins.
-            </p>
-          ) : (
-            <form onSubmit={handleWalletAdjust} className="mt-3 space-y-3.5" noValidate>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="text-[11px] font-semibold text-slate-500">Selected User</div>
-                <div className="mt-0.5 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-sm font-bold text-slate-900 truncate">
-                        {selectedUser.displayName}
-                      </span>
-                      {selectedUser.publicUid && (
-                        <span className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[11px] font-bold text-slate-800 tabular-nums">
-                          ID: {selectedUser.publicUid}
+            {!selectedUser ? (
+              <p className="py-10 text-center text-xs text-slate-500">
+                Select a user from the list to add or deduct coins.
+              </p>
+            ) : (
+              <form onSubmit={handleWalletAdjust} className="mt-3 space-y-3.5" noValidate>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-[11px] font-semibold text-slate-500">Selected User</div>
+                  <div className="mt-0.5 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-sm font-bold text-slate-900 truncate">
+                          {selectedUser.displayName}
                         </span>
-                      )}
-                    </div>
+                        {selectedUser.publicUid && (
+                          <span className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[11px] font-bold text-slate-800 tabular-nums">
+                            ID: {selectedUser.publicUid}
+                          </span>
+                        )}
+                        {selectedUser.suspended && (
+                          <span className="inline-flex items-center gap-1 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            SUSPENDED
+                          </span>
+                        )}
+                      </div>
                     <div className="text-xs text-slate-600 truncate">
                       {formatUserContact(selectedUser, true)}
                     </div>
@@ -854,7 +1019,202 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       : 'Confirm Deduct Coins'}
                 </span>
               </button>
-            </form>
+              </form>
+            )}
+          </div>
+
+          {selectedUser && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-indigo-600" aria-hidden="true" />
+                  <h2 className="font-display text-base font-bold text-slate-900">
+                    Account Status &amp; Password
+                  </h2>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                    selectedUser.suspended
+                      ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                      : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                  }`}
+                >
+                  {selectedUser.suspended ? 'Suspended' : 'Active'}
+                </span>
+              </div>
+
+              {/* Suspend / Unsuspend Section */}
+              <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-800">
+                    {selectedUser.suspended ? 'User Account Suspended' : 'Suspend User Account'}
+                  </span>
+                  {selectedUser.suspended && selectedUser.suspendedAtMs && (
+                    <span className="font-mono text-[10px] text-slate-500">
+                      {formatDateTime(selectedUser.suspendedAtMs)}
+                    </span>
+                  )}
+                </div>
+
+                {selectedUser.suspended && selectedUser.suspendedReason && (
+                  <p className="rounded border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-medium text-rose-800">
+                    Reason: {selectedUser.suspendedReason}
+                  </p>
+                )}
+
+                {selectedUser.uid === adminUid || selectedUser.isAdmin ? (
+                  <p className="text-[11px] font-medium text-slate-500">
+                    Administrator accounts cannot be suspended.
+                  </p>
+                ) : (
+                  <>
+                    {!selectedUser.suspended && (
+                      <input
+                        type="text"
+                        maxLength={200}
+                        value={suspendReasonInput}
+                        onChange={(e) => {
+                          setSuspendReasonInput(e.target.value);
+                          if (statusError) setStatusError(null);
+                        }}
+                        disabled={statusSubmitting}
+                        placeholder="Suspension reason (optional, e.g. Violation)"
+                        aria-label="Suspension reason"
+                        className="h-9 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                    )}
+
+                    {statusError && (
+                      <p
+                        role="alert"
+                        className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-semibold text-rose-700"
+                      >
+                        {statusError}
+                      </p>
+                    )}
+
+                    {statusSuccess && (
+                      <p
+                        role="status"
+                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800"
+                      >
+                        {statusSuccess}
+                      </p>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={statusSubmitting}
+                      onClick={() => void handleToggleSuspendUser(!selectedUser.suspended)}
+                      className={`inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-bold text-white transition-colors disabled:opacity-60 ${
+                        selectedUser.suspended
+                          ? 'bg-emerald-600 hover:bg-emerald-700'
+                          : 'bg-rose-600 hover:bg-rose-700'
+                      }`}
+                    >
+                      <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>
+                        {statusSubmitting
+                          ? 'Updating Account Status...'
+                          : selectedUser.suspended
+                            ? 'Unsuspend (Reactivate User)'
+                            : 'Suspend User'}
+                      </span>
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Change User Password Section */}
+              <form onSubmit={handleAdminPasswordChange} className="space-y-2.5" noValidate>
+                <div className="flex items-center gap-1.5">
+                  <KeyRound className="h-3.5 w-3.5 text-slate-600" aria-hidden="true" />
+                  <span className="text-xs font-bold text-slate-800">Change User Password</span>
+                </div>
+
+                {selectedUser.isAdmin && selectedUser.uid !== adminUid ? (
+                  <p className="text-[11px] font-medium text-slate-500">
+                    Cannot change another administrator account password.
+                  </p>
+                ) : (
+                  <>
+                    <div className="relative flex items-center">
+                      <input
+                        type={showNewPassword ? 'text' : 'password'}
+                        maxLength={128}
+                        value={newPasswordInput}
+                        onChange={(e) => {
+                          setNewPasswordInput(e.target.value);
+                          if (passwordError) setPasswordError(null);
+                          if (passwordSuccess) setPasswordSuccess(null);
+                        }}
+                        disabled={passwordSubmitting}
+                        placeholder="New password (min 6 chars)"
+                        aria-label="New user password"
+                        className="h-10 w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 font-mono text-xs font-bold text-slate-900 placeholder:font-sans placeholder:font-normal placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword((prev) => !prev)}
+                        aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-2 inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                      >
+                        {showNewPassword ? (
+                          <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+                        ) : (
+                          <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      maxLength={128}
+                      value={confirmPasswordInput}
+                      onChange={(e) => {
+                        setConfirmPasswordInput(e.target.value);
+                        if (passwordError) setPasswordError(null);
+                        if (passwordSuccess) setPasswordSuccess(null);
+                      }}
+                      disabled={passwordSubmitting}
+                      placeholder="Confirm new password"
+                      aria-label="Confirm new user password"
+                      className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs font-bold text-slate-900 placeholder:font-sans placeholder:font-normal placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    />
+
+                    {passwordError && (
+                      <p
+                        role="alert"
+                        className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-semibold text-rose-700"
+                      >
+                        {passwordError}
+                      </p>
+                    )}
+
+                    {passwordSuccess && (
+                      <p
+                        role="status"
+                        className="flex items-start gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600 mt-0.5" aria-hidden="true" />
+                        <span>{passwordSuccess}</span>
+                      </p>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={passwordSubmitting}
+                      className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 text-xs font-bold text-white transition-colors hover:bg-slate-800 disabled:opacity-60"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>
+                        {passwordSubmitting ? 'Updating Password...' : 'Update User Password'}
+                      </span>
+                    </button>
+                  </>
+                )}
+              </form>
+            </div>
           )}
         </div>
       </div>

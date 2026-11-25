@@ -82,6 +82,9 @@ service cloud.firestore {
           'chickenWinStreak',
           'lastResetAtMs',
           'followBonusClaimed',
+          'suspended',
+          'suspendedReason',
+          'suspendedAtMs',
           'createdAt',
           'updatedAt'
         ])
@@ -115,6 +118,9 @@ service cloud.firestore {
         && (!('chickenWinStreak' in data) || data.chickenWinStreak is int)
         && (data.lastResetAtMs is int || data.lastResetAtMs is float)
         && data.followBonusClaimed is bool
+        && (!('suspended' in data) || data.suspended is bool)
+        && (!('suspendedReason' in data) || (data.suspendedReason is string && data.suspendedReason.size() <= 200))
+        && (!('suspendedAtMs' in data) || (data.suspendedAtMs is int || data.suspendedAtMs is float))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -154,6 +160,12 @@ service cloud.firestore {
         && (!('chickenWinStreak' in existing()) || incoming().chickenWinStreak == existing().chickenWinStreak)
         && incoming().lastResetAtMs == existing().lastResetAtMs
         && incoming().followBonusClaimed == existing().followBonusClaimed
+        && (!('suspended' in existing()) || ('suspended' in incoming() && incoming().suspended == existing().suspended))
+        && (!('suspended' in incoming()) || ('suspended' in existing()))
+        && (!('suspendedReason' in existing()) || ('suspendedReason' in incoming() && incoming().suspendedReason == existing().suspendedReason))
+        && (!('suspendedReason' in incoming()) || ('suspendedReason' in existing()))
+        && (!('suspendedAtMs' in existing()) || ('suspendedAtMs' in incoming() && incoming().suspendedAtMs == existing().suspendedAtMs))
+        && (!('suspendedAtMs' in incoming()) || ('suspendedAtMs' in existing()))
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([

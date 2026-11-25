@@ -104,6 +104,16 @@
         "followBonusClaimed": {
           "type": "boolean"
         },
+        "suspended": {
+          "type": "boolean"
+        },
+        "suspendedReason": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "suspendedAtMs": {
+          "type": "number"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
